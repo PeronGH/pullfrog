@@ -82,7 +82,9 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
 
   const runtime = buildRuntimeContext(ctx);
 
-  const user = ctx.payload.prompt
+  const user = ctx.payload.prompt;
+
+  const userQuoted = user
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
@@ -166,7 +168,7 @@ ${system}
 
 ************* USER PROMPT *************
 
-${user}
+${userQuoted}
 
 ************* EVENT DATA *************
 
