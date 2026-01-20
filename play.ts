@@ -30,6 +30,8 @@ export async function run(inputsOrPrompt: Inputs | string): Promise<AgentResult>
   try {
     setupTestRepo({ tempDir });
     process.chdir(tempDir);
+    // set GITHUB_WORKSPACE to tempDir so main() doesn't try to chdir to the CI checkout path
+    process.env.GITHUB_WORKSPACE = tempDir;
 
     // allow passing full Inputs object or just a prompt string
     const inputs: Inputs =

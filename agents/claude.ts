@@ -31,7 +31,7 @@ function buildDisallowedTools(ctx: AgentRunContext): string[] {
   // both "disabled" and "restricted" block native bash
   // "restricted" means use MCP bash tool instead
   const bash = ctx.payload.bash;
-  if (bash !== "enabled") disallowed.push("Bash");
+  if (bash !== "enabled") disallowed.push("Bash", "Task(Bash)");
   return disallowed;
 }
 

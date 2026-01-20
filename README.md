@@ -38,6 +38,7 @@ Pullfrog is the bridge between your preferred coding agents and GitHub. Use it f
 - **🤙 Issue management** — Via the "issue created" trigger, Pullfrog can automatically respond to common questions, create implementation plans, and link to related issues/PRs. Or (if you're feeling lucky) you can prompt it to immediately attempt a PR addressing new issues.
 - **Literally whatever** — Want to have the agent automatically add docs to all new PRs? Cut a new release with agent-written notes on every commit to `main`? Pullfrog lets you do it.
 
+
 <!-- Features
 - **Agent-agnostic** — Switch between agents with the click of a radio button.
 - ** -->
