@@ -73,21 +73,21 @@ export function computeModes(): Mode[] {
 
 2. ${dependencyInstallationStep}
 
-3. Review the feedback provided. Understand each review comment and what changes are being requested.
-   - **EVENT DATA may contain review comment details**: If available, \`approved_comments\` are comments to address, \`unapproved_comments\` are for context only. The \`triggerer\` field indicates who initiated this action - prioritize their replies when deciding how to implement fixes.
-   - You can use ${ghPullfrogMcpName}/get_pull_request to get PR metadata if needed.
+3. Fetch review comments using ${ghPullfrogMcpName}/get_review_comments with \`pull_number\` and \`review_id\` from EVENT DATA. This returns \`commentsPath\` - read that file for full comment details with diff context. If EVENT DATA contains a \`triggerer\` field (indicating who requested fixes), you can pass \`approved_by\` to filter to only comments they approved with 👍.
 
-4. If the request requires understanding the codebase structure or conventions, gather relevant context. Read AGENTS.md if it exists.
+4. Review the feedback provided. Understand each review comment and what changes are being requested.
 
-5. Make the necessary code changes to address the feedback. Work through each review comment systematically.
+5. If the request requires understanding the codebase structure or conventions, gather relevant context. Read AGENTS.md if it exists.
 
-6. **CRITICAL: Reply to EACH review comment individually.** After fixing each comment, use ${ghPullfrogMcpName}/reply_to_review_comment to reply directly to that comment thread. Keep replies extremely brief (1 sentence max, e.g., "Fixed by renaming to X" or "Added null check"). If suggesting a small, specific, self-contained code change, use GitHub's suggestion format with \`\`\`suggestion blocks.
+6. Make the necessary code changes to address the feedback. Work through each review comment systematically.
 
-7. Test your changes to ensure they work correctly.
+7. **CRITICAL: Reply to EACH review comment individually.** After fixing each comment, use ${ghPullfrogMcpName}/reply_to_review_comment to reply directly to that comment thread. Keep replies extremely brief (1 sentence max, e.g., "Fixed by renaming to X" or "Added null check"). If suggesting a small, specific, self-contained code change, use GitHub's suggestion format with \`\`\`suggestion blocks.
 
-8. When done, commit your changes with ${ghPullfrogMcpName}/commit_files, then push with ${ghPullfrogMcpName}/push_branch. The push will automatically go to the correct remote (including fork repos). Do not create a new branch or PR - you are updating an existing one.
+8. Test your changes to ensure they work correctly.
 
-9. ${reportProgressInstruction}
+9. When done, commit your changes with ${ghPullfrogMcpName}/commit_files, then push with ${ghPullfrogMcpName}/push_branch. The push will automatically go to the correct remote (including fork repos). Do not create a new branch or PR - you are updating an existing one.
+
+10. ${reportProgressInstruction}
 
 **CRITICAL: Keep the progress comment extremely brief.** The summary should be 1-2 sentences max (e.g., "Fixed 3 review comments and pushed changes."). Almost all detail belongs in the individual reply_to_review_comment calls, NOT in the progress comment.`,
     },

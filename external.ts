@@ -69,17 +69,13 @@ interface BasePayloadEvent {
   issue_number?: number;
   is_pr?: boolean;
   branch?: string;
-  pr_title?: string;
-  pr_body?: string | null;
-  issue_title?: string;
-  issue_body?: string | null;
+  /** title of the issue/PR (or contextual title for comments) */
+  title?: string;
+  /** primary content for this trigger (issue body, PR body, comment body, review body, etc.) */
+  body?: string | null;
   comment_id?: number;
-  comment_body?: string;
   review_id?: number;
-  review_body?: string | null;
   review_state?: string;
-  review_comments?: any[];
-  context?: any;
   thread?: any;
   pull_request?: any;
   check_suite?: {
@@ -102,8 +98,8 @@ interface PullRequestOpenedEvent extends BasePayloadEvent {
   trigger: "pull_request_opened";
   issue_number: number;
   is_pr: true;
-  pr_title: string;
-  pr_body: string | null;
+  title: string;
+  body: string | null;
   branch: string;
 }
 
@@ -111,8 +107,8 @@ interface PullRequestReadyForReviewEvent extends BasePayloadEvent {
   trigger: "pull_request_ready_for_review";
   issue_number: number;
   is_pr: true;
-  pr_title: string;
-  pr_body: string | null;
+  title: string;
+  body: string | null;
   branch: string;
 }
 
@@ -120,8 +116,8 @@ interface PullRequestReviewRequestedEvent extends BasePayloadEvent {
   trigger: "pull_request_review_requested";
   issue_number: number;
   is_pr: true;
-  pr_title: string;
-  pr_body: string | null;
+  title: string;
+  body: string | null;
   branch: string;
 }
 
@@ -130,10 +126,9 @@ interface PullRequestReviewSubmittedEvent extends BasePayloadEvent {
   issue_number: number;
   is_pr: true;
   review_id: number;
-  review_body: string | null;
+  /** review body is the primary content */
+  body: string | null;
   review_state: string;
-  review_comments: any[];
-  context: any;
   branch: string;
 }
 
@@ -141,9 +136,10 @@ interface PullRequestReviewCommentCreatedEvent extends BasePayloadEvent {
   trigger: "pull_request_review_comment_created";
   issue_number: number;
   is_pr: true;
-  pr_title: string;
+  title: string;
   comment_id: number;
-  comment_body: string;
+  /** comment body is the primary content */
+  body: string;
   thread?: any;
   branch: string;
 }
@@ -151,42 +147,42 @@ interface PullRequestReviewCommentCreatedEvent extends BasePayloadEvent {
 interface IssuesOpenedEvent extends BasePayloadEvent {
   trigger: "issues_opened";
   issue_number: number;
-  issue_title: string;
-  issue_body: string | null;
+  title: string;
+  body: string | null;
 }
 
 interface IssuesAssignedEvent extends BasePayloadEvent {
   trigger: "issues_assigned";
   issue_number: number;
-  issue_title: string;
-  issue_body: string | null;
+  title: string;
+  body: string | null;
 }
 
 interface IssuesLabeledEvent extends BasePayloadEvent {
   trigger: "issues_labeled";
   issue_number: number;
-  issue_title: string;
-  issue_body: string | null;
+  title: string;
+  body: string | null;
 }
 
 interface IssueCommentCreatedEvent extends BasePayloadEvent {
   trigger: "issue_comment_created";
   comment_id: number;
-  comment_body: string;
+  /** comment body is the primary content */
+  body: string;
   issue_number: number;
   // PR-specific fields (only present when is_pr is true)
   is_pr?: true;
   branch?: string;
-  pr_title?: string;
-  pr_body?: string | null;
+  title?: string;
 }
 
 interface CheckSuiteCompletedEvent extends BasePayloadEvent {
   trigger: "check_suite_completed";
   issue_number: number;
   is_pr: true;
-  pr_title: string;
-  pr_body: string | null;
+  title: string;
+  body: string | null;
   pull_request: any;
   branch: string;
   check_suite: {
@@ -216,7 +212,8 @@ interface ImplementPlanEvent extends BasePayloadEvent {
   trigger: "implement_plan";
   issue_number: number;
   plan_comment_id: number;
-  plan_content: string;
+  /** plan content is the primary content */
+  body: string;
 }
 
 interface UnknownEvent extends BasePayloadEvent {

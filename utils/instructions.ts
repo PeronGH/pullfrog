@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { encode as toonEncode } from "@toon-format/toon";
-import { ghPullfrogMcpName } from "../external.ts";
+import { ghPullfrogMcpName, type PayloadEvent } from "../external.ts";
 import type { Mode } from "../modes.ts";
 import type { ResolvedPayload } from "./payload.ts";
 import type { RepoData } from "./repoData.ts";
@@ -12,22 +12,30 @@ interface InstructionsContext {
 }
 
 function buildRuntimeContext(ctx: InstructionsContext): string {
-  const lines: string[] = [];
+  // extract payload fields excluding prompt/repoInstructions/event
+  const {
+    "~pullfrog": _,
+    prompt: _p,
+    repoInstructions: _r,
+    event: _e,
+    ...payloadRest
+  } = ctx.payload;
 
-  lines.push(`working_directory: ${process.cwd()}`);
-  lines.push(`log_level: ${process.env.LOG_LEVEL}`);
-
+  let gitStatus: string | undefined;
   try {
-    const gitStatus = execSync("git status --short", { encoding: "utf-8", stdio: "pipe" }).trim();
-    lines.push(`git_status: ${gitStatus || "(clean)"}`);
+    gitStatus =
+      execSync("git status --short", { encoding: "utf-8", stdio: "pipe" }).trim() || "(clean)";
   } catch {
     // git not available or not in a repo
   }
 
-  lines.push(`repo: ${ctx.repoData.owner}/${ctx.repoData.name}`);
-  lines.push(`default_branch: ${ctx.repoData.repo.default_branch}`);
-
-  const ghVars: Record<string, string | undefined> = {
+  const data: Record<string, unknown> = {
+    ...payloadRest,
+    repo: `${ctx.repoData.owner}/${ctx.repoData.name}`,
+    default_branch: ctx.repoData.repo.default_branch,
+    working_directory: process.cwd(),
+    log_level: process.env.LOG_LEVEL,
+    git_status: gitStatus,
     github_event_name: process.env.GITHUB_EVENT_NAME,
     github_ref: process.env.GITHUB_REF,
     github_sha: process.env.GITHUB_SHA?.slice(0, 7),
@@ -35,13 +43,36 @@ function buildRuntimeContext(ctx: InstructionsContext): string {
     github_run_id: process.env.GITHUB_RUN_ID,
     github_workflow: process.env.GITHUB_WORKFLOW,
   };
-  for (const [key, value] of Object.entries(ghVars)) {
-    if (value) {
-      lines.push(`${key}: ${value}`);
-    }
+
+  // filter out undefined values
+  const filtered = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== undefined));
+
+  return toonEncode(filtered);
+}
+
+function buildEventData(event: PayloadEvent): string {
+  const { title, body, ...rest } = event;
+  const sections: string[] = [];
+
+  // render title + body as markdown
+  const trimmedTitle = typeof title === "string" ? title.trim() : "";
+  const trimmedBody = typeof body === "string" ? body.trim() : "";
+
+  if (trimmedTitle) {
+    sections.push(`# ${trimmedTitle}`);
   }
 
-  return lines.join("\n");
+  if (trimmedBody) {
+    sections.push(trimmedBody);
+  }
+
+  // separator and toon-encoded remaining fields
+  if (Object.keys(rest).length > 0) {
+    if (sections.length > 0) sections.push("---");
+    sections.push(toonEncode(rest));
+  }
+
+  return sections.join("\n\n");
 }
 
 function getShellInstructions(bash: ResolvedPayload["bash"]): string {
@@ -71,18 +102,7 @@ export interface ResolvedInstructions {
 }
 
 export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructions {
-  const event = toonEncode({
-    agent: ctx.payload.agent,
-    effort: ctx.payload.effort,
-    permissions: {
-      web: ctx.payload.web,
-      search: ctx.payload.search,
-      write: ctx.payload.write,
-      bash: ctx.payload.bash,
-    },
-    event: ctx.payload.event,
-  });
-
+  const event = buildEventData(ctx.payload.event);
   const runtime = buildRuntimeContext(ctx);
 
   // user prompt is constructed server-side (body if @pullfrog tagged + per-trigger instructions)
@@ -190,11 +210,11 @@ ${repoSection}
 
 ************* EVENT DATA *************
 
-The following is structured data about the context of this run (agent, effort level, permissions, and the GitHub event that triggered it). Use this context to understand the full situation.
-
 ${event}
 
 ************* RUNTIME CONTEXT *************
+
+The following contains the agent configuration (agent, effort, permissions) and runtime environment details.
 
 ${runtime}`;
 
