@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PayloadEvent } from "../external.ts";
+import type { BashPermission, PayloadEvent } from "../external.ts";
 import { checkoutPrBranch } from "../mcp/checkout.ts";
 import type { ToolState } from "../mcp/server.ts";
 import { log } from "./cli.ts";
@@ -44,6 +44,8 @@ export function setupTestRepo(options: SetupOptions): void {
 
 interface SetupGitParams {
   token: string;
+  originalToken: string | undefined;
+  bashPermission: BashPermission;
   owner: string;
   name: string;
   event: PayloadEvent;
@@ -127,9 +129,18 @@ export async function setupGit(params: SetupGitParams): Promise<void> {
     log.debug("» no existing authentication headers to remove");
   }
 
+  // choose token for origin based on bash permission:
+  // - enabled: installation token (full access)
+  // - restricted/disabled: workflow token (limited by permissions block)
+  // this protects the base repo while allowing fork PR edits via fork remote
+  const originToken =
+    params.bashPermission === "enabled"
+      ? params.token
+      : (params.originalToken || params.token);
+  
   // non-PR events: set up origin with token, stay on default branch
   if (params.event.is_pr !== true || !params.event.issue_number) {
-    const originUrl = `https://x-access-token:${params.token}@github.com/${params.owner}/${params.name}.git`;
+    const originUrl = `https://x-access-token:${originToken}@github.com/${params.owner}/${params.name}.git`;
     $("git", ["remote", "set-url", "origin", originUrl], { cwd: repoDir });
     log.info("» updated origin URL with authentication token");
     return;
@@ -139,7 +150,7 @@ export async function setupGit(params: SetupGitParams): Promise<void> {
   const prNumber = params.event.issue_number;
 
   // ensure origin is configured with auth token before checkout
-  const originUrl = `https://x-access-token:${params.token}@github.com/${params.owner}/${params.name}.git`;
+  const originUrl = `https://x-access-token:${originToken}@github.com/${params.owner}/${params.name}.git`;
   $("git", ["remote", "set-url", "origin", originUrl], { cwd: repoDir });
 
   // use shared checkout helper (handles fork remotes, push config, etc.)

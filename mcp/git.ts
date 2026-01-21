@@ -1,8 +1,8 @@
 import { type } from "arktype";
-import type { ToolContext } from "./server.ts";
 import { log } from "../utils/cli.ts";
 import { containsSecrets } from "../utils/secrets.ts";
 import { $ } from "../utils/shell.ts";
+import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
 export function CreateBranchTool(ctx: ToolContext) {
@@ -141,11 +141,13 @@ export const PushBranch = type({
   force: type.boolean.describe("Force push (use with caution)").default(false),
 });
 
-export function PushBranchTool(_ctx: ToolContext) {
+export function PushBranchTool(ctx: ToolContext) {
+  const defaultBranch = ctx.repo.repo.default_branch || "main";
+
   return tool({
     name: "push_branch",
     description:
-      "Push the current branch (or specified branch) to the remote repository. Git automatically determines the correct remote based on branch config (set by checkout_pr for fork PRs). Never force push unless explicitly requested.",
+      "Push the current branch (or specified branch) to the remote repository. Git automatically determines the correct remote based on branch config (set by checkout_pr for fork PRs). Never force push unless explicitly requested. Pushes to the default branch are blocked.",
     parameters: PushBranch,
     execute: execute(async ({ branchName, force }) => {
       const branch = branchName || $("git", ["rev-parse", "--abbrev-ref", "HEAD"], { log: false });
@@ -166,6 +168,14 @@ export function PushBranchTool(_ctx: ToolContext) {
         remoteBranch = mergeRef.replace("refs/heads/", "");
       } catch {
         // no configured merge ref, use local branch name
+      }
+
+      // block pushes to default branch
+      if (remoteBranch === defaultBranch) {
+        throw new Error(
+          `Push blocked: cannot push directly to default branch '${remoteBranch}'. ` +
+            `Create a feature branch and open a PR instead.`
+        );
       }
 
       // use refspec when local and remote branch names differ

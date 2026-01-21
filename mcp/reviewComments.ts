@@ -8,6 +8,9 @@ import { execute, tool } from "./shared.ts";
 // fragment for nested replyTo (5 levels deep covers most threads)
 // because in_reply_to_id generally points to the top-level comment
 // this doesn't actually work as expected
+// TOD: implement an API endpoint with aggressive caching that fetches the PR's reviewThreads via graphql
+// separately fetch all the comments associated with the particular review
+// merge them, then construct the full thread context
 const REPLY_TO_FRAGMENT = `
   replyTo {
     databaseId

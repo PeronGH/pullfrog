@@ -30,11 +30,9 @@ function filterEnv(isPublicRepo: boolean): Record<string, string> {
     if (isPublicRepo && isSensitive(key)) continue;
     filtered[key] = value;
   }
-  // restore original GITHUB_TOKEN (the one set by GitHub Actions, not our installation token)
-  // this allows git operations in subprocesses to work while keeping our installation token secure
-  if (process.env.ORIGINAL_GITHUB_TOKEN) {
-    filtered.GITHUB_TOKEN = process.env.ORIGINAL_GITHUB_TOKEN;
-  }
+  // never restore GITHUB_TOKEN - agents must use MCP tools for git/gh operations
+  // this ensures all git operations go through auditable MCP tools where we can
+  // enforce branch protection, scan for secrets, etc.
   return filtered;
 }
 

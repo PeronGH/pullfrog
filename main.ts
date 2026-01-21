@@ -62,6 +62,8 @@ export async function main(): Promise<MainResult> {
 
     await setupGit({
       token: tokenRef.token,
+      originalToken: process.env.ORIGINAL_GITHUB_TOKEN,
+      bashPermission: payload.bash,
       owner: repo.owner,
       name: repo.name,
       event: payload.event,
