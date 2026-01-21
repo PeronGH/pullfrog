@@ -6,6 +6,8 @@ import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
 // fragment for nested replyTo (5 levels deep covers most threads)
+// because in_reply_to_id generally points to the top-level comment
+// this doesn't actually work as expected
 const REPLY_TO_FRAGMENT = `
   replyTo {
     databaseId
