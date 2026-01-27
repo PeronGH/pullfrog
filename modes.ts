@@ -146,6 +146,72 @@ export function computeModes(): Mode[] {
 5. ${reportProgressInstruction}`,
     },
     {
+      name: "Fix",
+      description:
+        "Fix CI failures; debug failing tests or builds; investigate and resolve check suite failures",
+      prompt: `Follow these steps to fix CI failures. THINK HARDER.
+
+**CRITICAL RULE**: Only fix issues that were INTRODUCED BY THIS PR. If the CI failure is unrelated to the PR's changes, you MUST abort without committing anything and report why.
+
+1. **GET FAILURE INFO** - Call ${ghPullfrogMcpName}/get_check_suite_logs with the check_suite_id from EVENT DATA. This returns:
+   - \`log_index\`: array of interesting lines (errors, warnings, failures) with line numbers - scan this first
+   - \`excerpt\`: curated ~80 lines around the main error - read this for immediate context
+   - \`full_log_path\`: path to complete log file - read specific line ranges if needed
+   - \`failed_steps\`: which CI steps failed (e.g., "Step 6: Run tests")
+
+2. **CHECKOUT AND ASSESS CAUSATION** - Use ${ghPullfrogMcpName}/checkout_pr to get the PR diff. BEFORE attempting any fix, you MUST determine if this PR caused the failure:
+   
+   **Ask yourself**: "Could the changes in this PR have caused this failure?"
+   
+   - Read the PR diff carefully - what files were modified?
+   - What is failing? (test file, module, assertion)
+   - Is there a PLAUSIBLE CONNECTION between the PR changes and the failure?
+   
+   **ABORT immediately if any of these are true:**
+   - The failing test/file was NOT touched by this PR AND doesn't depend on changed code
+   - The error is infrastructure-related (network timeout, runner OOM, service unavailable)
+   - The error is a flaky test that passes/fails randomly
+   - The error existed before this PR (pre-existing bug in main branch)
+   - The error is in a dependency update not introduced by this PR
+   
+   **When aborting**, use ${ghPullfrogMcpName}/report_progress to explain:
+   "This CI failure appears unrelated to the PR's changes. [Describe the failure]. [Explain why it's not caused by the PR]. No changes made."
+   
+   **Only proceed** if there's a clear, logical connection between the PR changes and the failure.
+
+3. **UNDERSTAND HOW CI RUNS** - Read the workflow file to understand exactly what commands CI runs:
+   - Look at \`.github/workflows/*.yml\` files
+   - Find the job/step that failed (from \`failed_steps\`)
+   - Note the EXACT command (e.g., \`pnpm -r test --filter=action\`, not just \`pnpm test\`)
+   - Check for any CI-specific environment variables or setup steps
+
+4. ${dependencyInstallationStep}
+
+5. **REPRODUCE LOCALLY** - Run the EXACT same command that CI runs:
+   - Do NOT simplify (e.g., don't run \`pnpm test\` if CI runs \`pnpm -r test --filter=action\`)
+   - Check if CI uses specific flags, filters, or environment variables
+   - If CI runs multiple test suites, run them all
+
+6. **ANALYZE THE FAILURE** - Use the log_index and excerpt to understand:
+   - What exactly failed (test name, file, assertion)
+   - Are there earlier warnings that might explain the failure?
+   - Is the failure flaky or deterministic?
+
+7. **FIX THE ISSUE** - Make the necessary code changes. Common patterns:
+   - Test assertion failures: fix the code or update the test expectation
+   - Build failures: fix type errors, missing imports, syntax issues
+   - Lint failures: fix code style issues
+   - Timeout/flaky tests: investigate race conditions or increase timeouts
+
+8. **VERIFY THE FIX** - Run the EXACT same CI command again to confirm the fix works
+
+9. **COMMIT AND PUSH** - Use ${ghPullfrogMcpName}/commit_files and ${ghPullfrogMcpName}/push_branch
+
+10. ${reportProgressInstruction}
+
+**REMEMBER**: Your job is to fix issues THIS PR introduced, not to fix all CI failures. If in doubt about causation, abort and explain rather than making speculative changes.`,
+    },
+    {
       name: "Prompt",
       description:
         "Fallback for tasks that don't fit other workflows, e.g. direct prompts via comments, or requests requiring general assistance",

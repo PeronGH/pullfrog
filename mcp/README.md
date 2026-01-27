@@ -7,7 +7,7 @@ this directory contains the mcp (model context protocol) server tools for intera
 ### check suite tools
 
 #### `get_check_suite_logs`
-get workflow run logs for a failed check suite.
+get workflow run logs for a failed check suite with intelligent log analysis.
 
 **parameters:**
 - `check_suite_id` (number): the id from check_suite.id in the webhook payload
@@ -15,16 +15,41 @@ get workflow run logs for a failed check suite.
 **replaces:** `gh run list` and `gh run view --log`
 
 **returns:**
-all logs from all failed workflow runs in the check suite, including:
-- workflow run details (id, name, html_url, conclusion)
-- job details for each workflow run (id, name, status, conclusion, logs)
+structured failure information for each failed job:
+- `_instructions`: explains how to use each field
+- `failed_jobs[]`: array of failed job results, each containing:
+  - `job_id`, `job_name`, `job_url`: job identification
+  - `failed_steps`: which CI steps failed (e.g., "Step 6: Run tests")
+  - `log_index`: array of interesting lines (errors, warnings, failures) with line numbers
+  - `excerpt`: ~80 line curated window around the last error
+  - `full_log_path`: path to complete log file for deeper investigation
+
+**log_index types:**
+- `error`: lines matching `##[error]`, `Error:`, `ERR_`, `exit code N`
+- `warning`: lines matching `##[warning]`, `WARN`
+- `failure`: lines matching `N failed`, `FAIL`, `✕`
+- `trace`: stack trace lines (deduplicated)
+
+**workflow for using results:**
+1. scan `log_index` to see where errors/warnings/failures are located in the log
+2. read `excerpt` for immediate context around the main error
+3. if excerpt doesn't show what you need, read specific line ranges from `full_log_path`
+4. check `failed_steps` and read the workflow yml to understand what command failed
 
 **example:**
 ```typescript
 // when handling a check_suite_completed webhook
-await mcp.call("gh_pullfrog/get_check_suite_logs", {
+const result = await mcp.call("gh_pullfrog/get_check_suite_logs", {
   check_suite_id: check_suite.id
 });
+
+// result.failed_jobs[0].log_index shows:
+// [
+//   { line: 181, content: "WARN  Failed to create bin...", type: "warning" },
+//   { line: 1079, content: "Error: expect(received).toBe(expected)", type: "error" },
+//   ...
+// ]
+// use these line numbers to read specific sections from full_log_path
 ```
 
 ### review tools
