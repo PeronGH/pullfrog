@@ -22,6 +22,7 @@ export const JsonPayload = type({
   "repoInstructions?": "string",
   "event?": "object",
   "effort?": Effort.or("undefined"),
+  "timeout?": type.string.or("undefined"),
 });
 
 // permission levels that indicate collaborator status (have push access)
@@ -41,6 +42,7 @@ function isCollaborator(event: PayloadEvent): boolean {
 export const Inputs = type({
   prompt: "string",
   "effort?": Effort.or("undefined"),
+  "timeout?": type.string.or("undefined"),
   "agent?": AgentName.or("undefined"),
   "web?": ToolPermissionInput.or("undefined"),
   "search?": ToolPermissionInput.or("undefined"),
@@ -70,6 +72,7 @@ export function resolvePayload(repoSettings: RepoSettings) {
   const inputs = Inputs.assert({
     prompt: core.getInput("prompt", { required: true }),
     effort: core.getInput("effort") || undefined,
+    timeout: core.getInput("timeout") || undefined,
     agent: core.getInput("agent") || undefined,
     cwd: core.getInput("cwd") || undefined,
     web: core.getInput("web") || undefined,
@@ -145,6 +148,7 @@ export function resolvePayload(repoSettings: RepoSettings) {
     repoInstructions: jsonPayload?.repoInstructions,
     event,
     effort: inputs.effort ?? jsonPayload?.effort ?? "auto",
+    timeout: inputs.timeout ?? jsonPayload?.timeout,
     cwd: resolveCwd(inputs.cwd),
 
     // permissions: inputs > repoSettings > fallbacks

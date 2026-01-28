@@ -2,16 +2,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "dotenv";
 import { agentsManifest } from "../external.ts";
 import type { Inputs } from "../main.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const actionDir = join(__dirname, "..");
-
-// load .env files
-config({ path: join(actionDir, ".env") });
-config({ path: join(actionDir, "..", ".env") });
 
 const LOCAL_TEST_WARNING = "This is a local test - do not post any comments to GitHub.";
 
@@ -116,18 +111,25 @@ export interface RunOptions {
   env?: Record<string, string> | undefined;
 }
 
+const DEFAULT_TEST_TIMEOUT = "10m";
+
 // run agent and stream output with prefix labels
 export async function runAgentStreaming(agent: string, options: RunOptions): Promise<AgentResult> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     const prefix = getAgentPrefix(agent);
 
-    const child = spawn("node", ["play.ts"], {
+    // apply default timeout if not specified in fixture
+    const fixture: Inputs = {
+      ...options.fixture,
+      timeout: options.fixture.timeout ?? DEFAULT_TEST_TIMEOUT,
+    };
+
+    const child = spawn("node", ["play.ts", "--raw", JSON.stringify(fixture)], {
       cwd: actionDir,
       env: {
         ...process.env,
         AGENT_OVERRIDE: agent,
-        PLAY_FIXTURE: JSON.stringify(options.fixture),
         ...options.env,
       },
       stdio: "pipe",
@@ -174,12 +176,17 @@ export async function runAgent(agent: string, options: RunOptions): Promise<Agen
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
 
-    const child = spawn("node", ["play.ts"], {
+    // apply default timeout if not specified in fixture
+    const fixture: Inputs = {
+      ...options.fixture,
+      timeout: options.fixture.timeout ?? DEFAULT_TEST_TIMEOUT,
+    };
+
+    const child = spawn("node", ["play.ts", "--raw", JSON.stringify(fixture)], {
       cwd: actionDir,
       env: {
         ...process.env,
         AGENT_OVERRIDE: agent,
-        PLAY_FIXTURE: JSON.stringify(options.fixture),
         ...options.env,
       },
       stdio: "pipe",
@@ -198,13 +205,29 @@ export async function runAgent(agent: string, options: RunOptions): Promise<Agen
   });
 }
 
-export function validateResult(result: AgentResult, validator: ValidatorFn): ValidationResult {
+export type ValidateResultOptions = {
+  // if true, test passes when validation checks pass regardless of agent success
+  // (used for tests like timeout that expect the agent run to fail)
+  expectFailure?: boolean | undefined;
+};
+
+export function validateResult(
+  result: AgentResult,
+  validator: ValidatorFn,
+  options?: ValidateResultOptions
+): ValidationResult {
   const checks = validator(result);
   const allPassed = checks.every((c) => c.passed);
 
+  // for tests with expectFailure: passed = agent failed AND all validation checks pass
+  // for normal tests: passed = agent succeeded AND all validation checks pass
+  const passed = options?.expectFailure
+    ? !result.success && allPassed
+    : result.success && allPassed;
+
   return {
     agent: result.agent,
-    passed: result.success && allPassed,
+    passed,
     checks,
     output: result.output,
   };
@@ -234,43 +257,9 @@ export interface TestRunnerOptions {
   env?: Record<string, string>;
   // per-agent env vars (for unique markers)
   agentEnv?: Map<string, Record<string, string>>;
-}
-
-export async function runTests(options: TestRunnerOptions): Promise<void> {
-  const agentArg = process.argv[2];
-
-  if (agentArg) {
-    // single agent mode
-    if (!agents.includes(agentArg as (typeof agents)[number])) {
-      console.error(`unknown agent: ${agentArg}`);
-      console.error(`available agents: ${agents.join(", ")}`);
-      process.exit(1);
-    }
-    console.log(`running ${options.name} for: ${agentArg}\n`);
-    const env = { ...options.env, ...options.agentEnv?.get(agentArg) };
-    const result = await runAgentStreaming(agentArg, { fixture: options.fixture, env });
-    const validation = validateResult(result, options.validator);
-    console.log();
-    printSingleValidation(validation);
-    process.exit(validation.passed ? 0 : 1);
-  }
-
-  // parallel mode with streaming
-  console.log(`running ${options.name} for: ${agents.join(", ")}\n`);
-
-  const results = await runAllAgentsStreaming({
-    fixture: options.fixture,
-    env: options.env,
-    agentEnv: options.agentEnv,
-  });
-
-  console.log();
-  const validations = results.map((r) => validateResult(r, options.validator));
-
-  printResults(validations);
-
-  const failed = validations.filter((v) => !v.passed);
-  process.exit(failed.length > 0 ? 1 : 0);
+  // if true, test passes when agent fails AND validation checks pass
+  // (used for tests like timeout that expect the agent run to fail)
+  expectFailure?: boolean;
 }
 
 export function printSingleValidation(validation: ValidationResult): void {

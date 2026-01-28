@@ -24,6 +24,10 @@ describe("Inputs schema", () => {
     ["effort", "mini"],
     ["effort", "auto"],
     ["effort", "max"],
+    ["timeout", "10m"],
+    ["timeout", "1h30m"],
+    ["timeout", "30s"],
+    ["timeout", undefined],
     ["agent", "claude"],
     ["agent", "codex"],
     ["agent", "cursor"],
@@ -63,6 +67,9 @@ describe("JsonPayload schema", () => {
     ["effort", "mini"],
     ["effort", "auto"],
     ["effort", "max"],
+    ["timeout", "10m"],
+    ["timeout", "1h30m"],
+    ["timeout", "30s"],
     ["event", { trigger: "unknown" }],
   ] as const)("should accept optional %s with value %s", (prop, value) => {
     const input = { "~pullfrog": true, version: "1.2.3", [prop]: value };

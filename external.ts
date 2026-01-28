@@ -255,6 +255,8 @@ export interface WriteablePayload {
   event: PayloadEvent;
   /** effort level for model selection (mini, auto, max) - defaults to "auto" */
   effort?: Effort | undefined;
+  /** timeout for agent run (e.g., "10m", "1h30m") - defaults to "1h" */
+  timeout?: string | undefined;
   /** working directory for the agent */
   cwd?: string | undefined;
 }

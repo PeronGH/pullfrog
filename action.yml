@@ -9,6 +9,9 @@ inputs:
   effort:
     description: "Effort level: mini (fast), auto (default), max (most capable)"
     required: false
+  timeout:
+    description: "Maximum run duration (e.g., 10m, 1h30m). Default: 1h"
+    required: false
   agent:
     description: "Agent to use: claude, codex, gemini, cursor, opencode"
     required: false

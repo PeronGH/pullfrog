@@ -94,17 +94,17 @@ Usage: node play.ts [options]
 Test the Pullfrog action with the inline playFixture.
 
 Options:
-  --raw [prompt]          Use raw string as prompt instead of playFixture
+  --raw [input]           Use raw string as prompt, or JSON object as full fixture
   --local, -l             Run locally (default: runs in Docker)
   -h, --help              Show this help message
 
 Environment:
   PLAY_LOCAL=1            Same as --local
-  PLAY_FIXTURE            JSON fixture passed by test runner (internal)
 
 Examples:
-  node play.ts                       # Run inline playFixture
-  node play.ts --raw "Hello world"   # Use raw string as prompt
+  node play.ts                                              # Run inline playFixture
+  node play.ts --raw "Hello world"                          # Use raw string as prompt
+  node play.ts --raw '{"prompt":"Hello","timeout":"5s"}'    # Use JSON fixture
     `);
     process.exit(0);
   }
@@ -228,15 +228,16 @@ Examples:
     process.exit(result.status ?? 1);
   }
 
-  // check for fixture passed via env var (from test runner)
-  if (process.env.PLAY_FIXTURE) {
-    const fixtureFromEnv = JSON.parse(process.env.PLAY_FIXTURE) as Inputs;
-    const result = await run(fixtureFromEnv);
-    process.exit(result.success ? 0 : 1);
-  }
-
   if (args["--raw"]) {
-    const result = await run(args["--raw"]);
+    const raw = args["--raw"];
+    // try to parse as JSON, otherwise treat as prompt string
+    let input: Inputs | string = raw;
+    try {
+      input = JSON.parse(raw) as Inputs;
+    } catch {
+      // not valid JSON, use as prompt string
+    }
+    const result = await run(input);
     process.exit(result.success ? 0 : 1);
   }
 

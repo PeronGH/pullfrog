@@ -14,6 +14,7 @@ import { resolvePayload } from "./utils/payload.ts";
 import { handleAgentResult } from "./utils/run.ts";
 import { resolveRunContextData } from "./utils/runContextData.ts";
 import { createTempDirectory, setupGit } from "./utils/setup.ts";
+import { parseTimeString, TIMEOUT_DISABLED } from "./utils/time.ts";
 import { Timer } from "./utils/timer.ts";
 import { resolveInstallationToken } from "./utils/token.ts";
 import { resolveRun } from "./utils/workflow.ts";
@@ -34,7 +35,6 @@ export async function main(): Promise<MainResult> {
 
   await using tokenRef = await resolveInstallationToken();
   process.env.GITHUB_TOKEN = tokenRef.token;
-
 
   const octokit = createOctokit(tokenRef.token);
   const runInfo = await resolveRun({ octokit });
@@ -114,12 +114,40 @@ export async function main(): Promise<MainResult> {
       modes,
     });
 
-    const result = await agent.run({
+    // run agent, optionally with timeout enforcement
+    const agentPromise = agent.run({
       payload,
       mcpServerUrl: mcpHttpServer.url,
       tmpdir,
       instructions,
     });
+
+    // timeout enforcement: default is 1 hour, but can be overridden via macros in the prompt:
+    // - #timeout2h (or any duration like "#timeout30m", "#timeout1h30m") to set a custom timeout
+    // - #notimeout to disable timeout entirely
+    let result: Awaited<typeof agentPromise>;
+    if (payload.timeout === TIMEOUT_DISABLED) {
+      result = await agentPromise;
+    } else {
+      const parsed = payload.timeout ? parseTimeString(payload.timeout) : null;
+      if (payload.timeout && parsed === null) {
+        log.warning(`Invalid timeout format "${payload.timeout}", using default 1h`);
+      }
+      const timeoutMs = parsed ?? 3600000;
+      const actualTimeout = parsed !== null ? payload.timeout : "1h";
+      let timeoutId: NodeJS.Timeout | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`agent run timed out after ${actualTimeout}`));
+        }, timeoutMs);
+      });
+      timeoutPromise.catch(() => {}); // prevent unhandled rejection if agent wins race
+      try {
+        result = await Promise.race([agentPromise, timeoutPromise]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
 
     // write last progress body to job summary
     if (toolState.lastProgressBody) {
