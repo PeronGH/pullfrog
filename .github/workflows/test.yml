@@ -1,4 +1,4 @@
-name: Tests
+name: Test
 
 on:
   pull_request:
@@ -20,6 +20,7 @@ jobs:
 
   agents:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -27,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         agent: [claude, codex, cursor, gemini, opencode]
-        test: [smoke, nobash, restricted]
+        test: [file-read-write, mcpmerge, no-native-file, nobash, restricted, smoke]
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -44,4 +45,28 @@ jobs:
           cache: "pnpm"
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm ${{ matrix.test }} ${{ matrix.agent }}
+      - run: pnpm runtest ${{ matrix.test }} ${{ matrix.agent }}
+
+  agnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        test: [file-traversal, git-permissions, githooks, proc-sandbox, push-disabled, push-enabled, push-restricted, symlink-traversal, timeout, token-exfil]
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm runtest ${{ matrix.test }}

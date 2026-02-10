@@ -1,18 +1,22 @@
+import { randomUUID } from "node:crypto";
 import type { AgentResult, TestRunnerOptions, ValidationCheck } from "../utils.ts";
-import { defineFixture, generateAgentUuids, getStructuredOutput } from "../utils.ts";
+import { defineFixture, getStructuredOutput } from "../utils.ts";
 
 /**
  * MCP merge test - validates repo-level MCP servers merge correctly with gh_pullfrog.
  *
- * uses GITHUB_REPOSITORY=pullfrog/test-repo-mcp which has robinMCP server.
- * all agents should auto-discover repo-level MCP configs and merge them with gh_pullfrog.
+ * Uses GITHUB_REPOSITORY=pullfrog/test-repo-mcp whose robin-mcp reads a secret
+ * from /tmp/pullfrog-mcp-secret/secret.txt (outside the repo, unreachable via
+ * file_read) and exposes it via get_test_value. The runner writes the secret
+ * there via repoSetup before the agent starts. Runs in nobash mode.
  */
 
-const testUuids = generateAgentUuids(["PULLFROG_MCP_TEST"]);
+const secret = randomUUID();
 
 const fixture = defineFixture(
   {
     prompt: `Call the get_test_value tool from the robinMCP server, then call set_output with the exact value returned.`,
+    bash: "disabled",
     effort: "mini",
   },
   { localOnly: true }
@@ -21,8 +25,7 @@ const fixture = defineFixture(
 function validator(result: AgentResult): ValidationCheck[] {
   const output = getStructuredOutput(result);
   const setOutputCalled = output !== null;
-  const expectedUuid = testUuids.getUuid(result.agent, "PULLFROG_MCP_TEST");
-  const correctValue = setOutputCalled && output === expectedUuid;
+  const correctValue = setOutputCalled && output === secret;
 
   return [
     { name: "set_output", passed: setOutputCalled },
@@ -34,8 +37,10 @@ export const test: TestRunnerOptions = {
   name: "mcpmerge",
   fixture,
   validator,
-  tags: ["mcpmerge"],
-  env: { GITHUB_REPOSITORY: "pullfrog/test-repo-mcp" },
-  agentEnv: testUuids.agentEnv,
-  fileAgentEnv: testUuids.agentEnv,
+  env: {
+    GITHUB_REPOSITORY: "pullfrog/test-repo-mcp",
+    PULLFROG_MCP_SECRET: secret,
+  },
+  repoSetup:
+    'mkdir -p /tmp/pullfrog-mcp-secret && printf "%s" "$PULLFROG_MCP_SECRET" > /tmp/pullfrog-mcp-secret/secret.txt',
 };

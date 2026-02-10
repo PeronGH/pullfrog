@@ -11,6 +11,28 @@ import { spawn } from "../utils/subprocess.ts";
 import { ThinkingTimer } from "../utils/timer.ts";
 import { type AgentRunContext, agent } from "./shared.ts";
 
+// known provider error patterns in stderr (from --print-logs output).
+// when OpenCode encounters these, it often goes silent on stdout (Issue #752),
+// so we surface them prominently instead of burying them in debug warnings.
+const PROVIDER_ERROR_PATTERNS = [
+  { pattern: "429", label: "rate limited (429)" },
+  { pattern: "RESOURCE_EXHAUSTED", label: "quota exhausted" },
+  { pattern: "quota", label: "quota error" },
+  { pattern: "status: 500", label: "provider 500 error" },
+  { pattern: "INTERNAL", label: "provider internal error" },
+  { pattern: "status: 503", label: "provider unavailable (503)" },
+  { pattern: "UNAVAILABLE", label: "provider unavailable" },
+  { pattern: "rate limit", label: "rate limited" },
+  { pattern: "limit: 0", label: "zero quota" },
+];
+
+function detectProviderError(text: string): string | null {
+  for (const entry of PROVIDER_ERROR_PATTERNS) {
+    if (text.includes(entry.pattern)) return entry.label;
+  }
+  return null;
+}
+
 async function installOpencode(): Promise<string> {
   return await installFromNpmTarball({
     packageName: "opencode-ai",
@@ -34,8 +56,19 @@ export const opencode = agent({
 
     configureOpenCode(ctx);
 
-    // message positional must come right after "run", before flags
-    const args = ["run", ctx.instructions.full, "--format", "json"];
+    // message positional must come right after "run", before flags.
+    // --print-logs makes OpenCode write internal logs to stderr (otherwise they only go to a log file).
+    // this is critical for debugging since opencode run suppresses errors by default (Issue #752).
+    const args = ["run", ctx.instructions.full, "--format", "json", "--print-logs"];
+
+    // only override model when OPENCODE_MODEL is set (e.g., test environments with
+    // restricted API quotas). in production, OpenCode auto-selects the best available
+    // model based on which provider API keys are present.
+    const modelOverride = process.env.OPENCODE_MODEL;
+    if (modelOverride) {
+      args.push("--model", modelOverride);
+      log.info(`» using model override: ${modelOverride}`);
+    }
 
     process.env.HOME = tempHome;
 
@@ -64,114 +97,180 @@ export const opencode = agent({
     let eventCount = 0;
     const thinkingTimer = new ThinkingTimer();
 
+    // track recent stderr lines for provider error diagnosis.
+    // when OpenCode goes silent on stdout, these are the only clue.
+    const recentStderr: string[] = [];
+    const MAX_STDERR_LINES = 20;
+    let lastProviderError: string | null = null;
+
     let output = "";
     let stdoutBuffer = ""; // buffer for incomplete lines across chunks
-    const result = await spawn({
-      cmd: cliPath,
-      args,
-      cwd: repoDir,
-      env,
-      timeout: 600000, // 10 minutes timeout to prevent infinite hangs
-      stdio: ["ignore", "pipe", "pipe"],
-      onStdout: async (chunk) => {
-        const text = chunk.toString();
-        output += text;
 
-        // buffer incomplete lines across chunks (NDJSON format)
-        stdoutBuffer += text;
-        const lines = stdoutBuffer.split("\n");
+    try {
+      const result = await spawn({
+        cmd: cliPath,
+        args,
+        cwd: repoDir,
+        env,
+        timeout: 600000, // 10 minutes timeout to prevent infinite hangs
+        stdio: ["ignore", "pipe", "pipe"],
+        onStdout: async (chunk) => {
+          const text = chunk.toString();
+          output += text;
 
-        // keep the last element (may be incomplete) in the buffer
-        stdoutBuffer = lines.pop() || "";
+          // buffer incomplete lines across chunks (NDJSON format)
+          stdoutBuffer += text;
+          const lines = stdoutBuffer.split("\n");
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            continue;
-          }
+          // keep the last element (may be incomplete) in the buffer
+          stdoutBuffer = lines.pop() || "";
 
-          try {
-            const event = JSON.parse(trimmed) as OpenCodeEvent;
-            eventCount++;
-
-            // debug log all events to diagnose ordering and missing MCP/bash tool calls
-            log.debug(JSON.stringify(event, null, 2));
-
-            const timeSinceLastActivity = getIdleMs();
-            if (timeSinceLastActivity > 10000) {
-              const activeToolCalls = toolCallTimings.size;
-              const toolCallInfo =
-                activeToolCalls > 0
-                  ? ` (waiting for ${activeToolCalls} tool call${activeToolCalls > 1 ? "s" : ""})`
-                  : " (OpenCode may be processing internally - LLM calls, planning, etc.)";
-              log.warning(
-                `» no activity for ${(timeSinceLastActivity / 1000).toFixed(1)}s${toolCallInfo} (${eventCount} events processed so far)`
-              );
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              continue;
             }
-            markActivity(); // reset activity timeout on every event
-            const handler = messageHandlers[event.type as keyof typeof messageHandlers];
-            if (handler) {
-              await handler(event as never, thinkingTimer);
-            } else {
-              // log unhandled event types for visibility
-              log.info(
-                `» OpenCode event (unhandled): type=${event.type}, data=${JSON.stringify(event).substring(0, 500)}`
-              );
+
+            try {
+              const event = JSON.parse(trimmed) as OpenCodeEvent;
+              eventCount++;
+
+              // debug log all events to diagnose ordering and missing MCP/bash tool calls
+              log.debug(JSON.stringify(event, null, 2));
+
+              const timeSinceLastActivity = getIdleMs();
+              if (timeSinceLastActivity > 10000) {
+                const activeToolCalls = toolCallTimings.size;
+                const toolCallInfo =
+                  activeToolCalls > 0
+                    ? ` (waiting for ${activeToolCalls} tool call${activeToolCalls > 1 ? "s" : ""})`
+                    : " (OpenCode may be processing internally - LLM calls, planning, etc.)";
+                log.warning(
+                  `» no activity for ${(timeSinceLastActivity / 1000).toFixed(1)}s${toolCallInfo} (${eventCount} events processed so far)`
+                );
+              }
+              markActivity(); // reset activity timeout on every event
+              const handler = messageHandlers[event.type as keyof typeof messageHandlers];
+              if (handler) {
+                await handler(event as never, thinkingTimer);
+              } else {
+                // log unhandled event types for visibility
+                log.info(
+                  `» OpenCode event (unhandled): type=${event.type}, data=${JSON.stringify(event).substring(0, 500)}`
+                );
+              }
+            } catch {
+              // non-JSON lines are ignored (might be debug output from opencode)
+              log.debug(`» non-JSON stdout line: ${trimmed.substring(0, 200)}`);
             }
-          } catch {
-            // non-JSON lines are ignored (might be debug output from opencode)
-            log.debug(`» non-JSON stdout line: ${trimmed.substring(0, 200)}`);
           }
-        }
-      },
-      onStderr: (chunk) => {
-        try {
-          const parsed = JSON.parse(chunk);
-          log.debug(JSON.stringify(parsed, null, 2));
-        } catch {
-          // if not JSON, fall through to regular error logging
-        }
-        const trimmed = chunk.trim();
-        if (trimmed) {
-          log.warning(trimmed);
-        }
-      },
-    });
+        },
+        onStderr: (chunk) => {
+          const trimmed = chunk.trim();
+          if (!trimmed) return;
 
-    const duration = Date.now() - startTime;
-    log.info(`» OpenCode CLI completed in ${duration}ms with exit code ${result.exitCode}`);
+          // track recent stderr for diagnosis
+          recentStderr.push(trimmed);
+          if (recentStderr.length > MAX_STDERR_LINES) recentStderr.shift();
 
-    // 8. log tokens if they weren't logged yet (fallback if result event wasn't emitted)
-    if (!tokensLogged && (accumulatedTokens.input > 0 || accumulatedTokens.output > 0)) {
-      const totalTokens = accumulatedTokens.input + accumulatedTokens.output;
-      log.table([
-        [
-          { data: "Input Tokens", header: true },
-          { data: "Output Tokens", header: true },
-          { data: "Total Tokens", header: true },
-        ],
-        [String(accumulatedTokens.input), String(accumulatedTokens.output), String(totalTokens)],
-      ]);
-    }
+          // detect provider errors and surface them prominently
+          const providerError = detectProviderError(trimmed);
+          if (providerError) {
+            lastProviderError = providerError;
+            log.error(`» provider error detected (${providerError}): ${trimmed.substring(0, 500)}`);
+          } else {
+            // try to parse as JSON for structured logging, fall back to warning
+            try {
+              const parsed = JSON.parse(trimmed);
+              log.debug(JSON.stringify(parsed, null, 2));
+            } catch {
+              log.warning(trimmed);
+            }
+          }
+        },
+      });
 
-    // 9. return result
-    if (result.exitCode !== 0) {
-      const errorMessage =
-        result.stderr || result.stdout || "Unknown error - no output from OpenCode CLI";
-      log.error(`OpenCode CLI exited with code ${result.exitCode}: ${errorMessage}`);
-      log.debug(`OpenCode stdout: ${result.stdout?.substring(0, 500)}`);
-      log.debug(`OpenCode stderr: ${result.stderr?.substring(0, 500)}`);
+      const duration = Date.now() - startTime;
+      log.info(`» OpenCode CLI completed in ${duration}ms with exit code ${result.exitCode}`);
+
+      // if zero events processed, something went wrong - surface stderr context
+      if (eventCount === 0) {
+        const stderrContext = recentStderr.join("\n");
+        const diagnosis = lastProviderError
+          ? `provider error: ${lastProviderError}`
+          : "unknown cause (no stdout events received)";
+        log.error(`» OpenCode produced 0 events (${diagnosis})`);
+        if (stderrContext) {
+          log.error(`» last stderr output:\n${stderrContext}`);
+        }
+      }
+
+      // log tokens if they weren't logged yet (fallback if result event wasn't emitted)
+      if (!tokensLogged && (accumulatedTokens.input > 0 || accumulatedTokens.output > 0)) {
+        const totalTokens = accumulatedTokens.input + accumulatedTokens.output;
+        log.table([
+          [
+            { data: "Input Tokens", header: true },
+            { data: "Output Tokens", header: true },
+            { data: "Total Tokens", header: true },
+          ],
+          [String(accumulatedTokens.input), String(accumulatedTokens.output), String(totalTokens)],
+        ]);
+      }
+
+      // return result
+      if (result.exitCode !== 0) {
+        const errorContext = lastProviderError ? ` (${lastProviderError})` : "";
+        const errorMessage =
+          result.stderr ||
+          result.stdout ||
+          `unknown error - no output from OpenCode CLI${errorContext}`;
+        log.error(
+          `OpenCode CLI exited with code ${result.exitCode}${errorContext}: ${errorMessage}`
+        );
+        log.debug(`OpenCode stdout: ${result.stdout?.substring(0, 500)}`);
+        log.debug(`OpenCode stderr: ${result.stderr?.substring(0, 500)}`);
+        return {
+          success: false,
+          output: finalOutput || output,
+          error: errorMessage,
+        };
+      }
+
+      return {
+        success: true,
+        output: finalOutput || output,
+      };
+    } catch (error) {
+      // activity timeout or process timeout - surface the real cause
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isActivityTimeout = errorMessage.includes("activity timeout");
+
+      // build a diagnostic message that includes provider context
+      const stderrContext = recentStderr.slice(-10).join("\n");
+      const diagnosis = lastProviderError
+        ? `likely cause: ${lastProviderError}`
+        : eventCount === 0
+          ? "OpenCode produced 0 stdout events - check if the model provider is reachable"
+          : `${eventCount} events were processed before the hang`;
+
+      log.error(
+        `» OpenCode ${isActivityTimeout ? "hung" : "failed"} after ${(duration / 1000).toFixed(1)}s: ${errorMessage}`
+      );
+      log.error(`» diagnosis: ${diagnosis}`);
+      if (stderrContext) {
+        log.error(
+          `» recent stderr (last ${Math.min(recentStderr.length, 10)} lines):\n${stderrContext}`
+        );
+      }
+
       return {
         success: false,
         output: finalOutput || output,
-        error: errorMessage,
+        error: `${errorMessage} [${diagnosis}]`,
       };
     }
-
-    return {
-      success: true,
-      output: finalOutput || output,
-    };
   },
 });
 
@@ -193,11 +292,11 @@ function configureOpenCode(ctx: AgentRunContext): void {
   // note: OpenCode has no built-in web search tool
   const bash = ctx.payload.bash;
   const permission = {
-    edit: "allow",
+    edit: "deny",
+    read: "deny",
     bash: bash !== "enabled" ? "deny" : "allow",
     webfetch: ctx.payload.web === "disabled" ? "deny" : "allow",
-    doom_loop: "allow",
-    external_directory: "allow",
+    external_directory: "deny",
   };
 
   // build complete config in one object

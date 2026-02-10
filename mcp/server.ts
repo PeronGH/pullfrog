@@ -89,6 +89,13 @@ import {
   AwaitDependencyInstallationTool,
   StartDependencyInstallationTool,
 } from "./dependencies.ts";
+import {
+  FileDeleteTool,
+  FileEditTool,
+  FileReadTool,
+  FileWriteTool,
+  ListDirectoryTool,
+} from "./file.ts";
 import { DeleteBranchTool, GitFetchTool, GitTool, PushBranchTool, PushTagsTool } from "./git.ts";
 import { IssueTool } from "./issue.ts";
 import { GetIssueCommentsTool } from "./issueComments.ts";
@@ -168,6 +175,11 @@ function buildTools(ctx: ToolContext): Tool<any, any>[] {
     PushTagsTool(ctx),
     UploadFileTool(ctx),
     SetOutputTool(ctx),
+    FileReadTool(ctx),
+    FileWriteTool(ctx),
+    FileEditTool(ctx),
+    FileDeleteTool(ctx),
+    ListDirectoryTool(ctx),
   ];
 
   // only add BashTool when bash is "restricted"

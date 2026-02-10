@@ -304,12 +304,18 @@ export interface TestRunnerOptions {
   // if true, test passes when agent fails AND validation checks pass
   // (used for tests like timeout that expect the agent run to fail)
   expectFailure?: boolean;
-  // tags for grouping tests (e.g., ["mcpmerge"], ["agnostic"])
+  // shell commands to run in the repo directory after cloning but before the
+  // agent starts. used to simulate pre-existing repo state (e.g., malicious
+  // symlinks from a PR). passed to play.ts via PULLFROG_TEST_REPO_SETUP env var.
+  repoSetup?: string;
+  // tags for grouping tests (e.g., ["agnostic"], ["fs"])
   // special tags:
   //   - "agnostic": runs with claude only, excluded when filtering by agent
   //   - "adhoc": excluded from default runs, must be explicitly requested
-  tags?: string[];
+  tags?: TestTag[];
 }
+
+export type TestTag = "adhoc" | "agnostic" | "fs" | "security";
 
 export function printSingleValidation(validation: ValidationResult): void {
   const checksStr = validation.checks.map((c) => `${c.name}=${c.passed ? "✓" : "✗"}`).join(" ");

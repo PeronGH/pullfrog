@@ -1,6 +1,6 @@
-# Check if lockfile needs updating
-if git diff --cached --name-only | grep -q "^package.json$"; then
-    echo "🔒 Updating lockfile..."
-    pnpm lock
-    git add pnpm-lock.yaml
+# sync action lockfile when action/package.json changes
+if git diff --cached --name-only | grep -q "^action/package.json$"; then
+    echo "🔒 syncing action/pnpm-lock.yaml..."
+    pnpm --ignore-workspace -C action install --no-frozen-lockfile
+    git add action/pnpm-lock.yaml
 fi

@@ -42,15 +42,26 @@ function writeCodexConfig(ctx: AgentRunContext): string {
     features.push("shell_command_tool = false");
     features.push("unified_exec = false");
   }
+  // note: there is no Codex feature flag to disable the native apply_patch tool.
+  // apply_patch_freeform only controls the freeform variant and defaults to false.
+  // native file tools are steered to MCP via instructions, and the sandbox (workspace-write
+  // or read-only) constrains what the native tool can access even if the agent ignores instructions.
   const featuresSection = features.length > 0 ? `[features]\n${features.join("\n")}` : "";
 
   // trust the project so codex loads repo-level .codex/config.toml
   const cwd = process.cwd();
   const projectTrustSection = `[projects."${cwd}"]\ntrust_level = "trusted"`;
 
+  // set approval_policy = "never" so we can avoid --dangerously-bypass-approvals-and-sandbox.
+  // this keeps sandbox enforcement active while still running non-interactively.
+  // the sandbox (workspace-write or read-only) constrains native file tool access.
+  const approvalSection = `approval_policy = "never"`;
+
   writeFileSync(
     configPath,
     `# written by pullfrog
+${approvalSection}
+
 ${featuresSection}
 
 ${projectTrustSection}
@@ -98,8 +109,11 @@ export const codex = agent({
     }
 
     // determine sandbox mode based on push permission
-    // push: "disabled" → read-only sandbox, otherwise full access for git ops
-    const sandboxMode = ctx.payload.push === "disabled" ? "read-only" : "danger-full-access";
+    // push: "disabled" → read-only sandbox, otherwise workspace-write.
+    // we avoid danger-full-access because it completely disables the sandbox,
+    // which would let native file tools (apply_patch) write anywhere unrestricted.
+    // workspace-write constrains native file access to the working directory.
+    const sandboxMode = ctx.payload.push === "disabled" ? "read-only" : "workspace-write";
 
     // determine network and search permissions
     // web: "disabled" → no network access, otherwise enabled
@@ -107,11 +121,15 @@ export const codex = agent({
     // search: "disabled" → no web search, otherwise enabled
     const webSearchEnabled = ctx.payload.search !== "disabled";
 
+    // note: we intentionally do NOT use --dangerously-bypass-approvals-and-sandbox.
+    // that flag bypasses both approvals AND the sandbox. instead, we set
+    // approval_policy = "never" in config.toml and keep the sandbox active.
+    // this ensures native file tools (apply_patch) are constrained by the sandbox
+    // even if the agent ignores MCP-only instructions.
     const args: string[] = [
       cliPath,
       "exec",
       ctx.instructions.full,
-      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       effortConfig.model,
       "--sandbox",

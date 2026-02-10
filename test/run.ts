@@ -16,6 +16,7 @@ import {
   printSingleValidation,
   runAgentStreaming,
   type TestRunnerOptions,
+  type TestTag,
   type ValidationResult,
   validateResult,
 } from "./utils.ts";
@@ -29,7 +30,7 @@ import {
  *   node test/run.ts               # run all tests (excludes adhoc-tagged tests)
  *   node test/run.ts smoke         # run tests named "smoke" or tagged "smoke"
  *   node test/run.ts claude        # run all tests for claude only
- *   node test/run.ts mcpmerge      # run all tests tagged "mcpmerge"
+ *   node test/run.ts fs            # run all tests tagged "fs"
  *   node test/run.ts agnostic      # run all agnostic-tagged tests (with claude)
  *   node test/run.ts adhoc         # run all adhoc-tagged tests
  *   node test/run.ts smoke claude  # run smoke tests for claude only
@@ -121,7 +122,7 @@ async function loadAllTests(): Promise<TestInfo[]> {
 }
 
 // check if test has a specific tag
-function hasTag(test: TestInfo, tag: string): boolean {
+function hasTag(test: TestInfo, tag: TestTag): boolean {
   return test.config.tags?.includes(tag) ?? false;
 }
 
@@ -140,7 +141,7 @@ function parseArgs(args: string[], allTests: TestInfo[]): ParsedArgs {
   for (const arg of args) {
     if (agents.includes(arg as (typeof agents)[number])) {
       agentFilters.push(arg);
-    } else if (testNames.has(arg) || allTags.has(arg)) {
+    } else if (testNames.has(arg) || allTags.has(arg as TestTag)) {
       filters.push(arg);
     } else {
       console.error(`unknown argument: ${arg}`);
@@ -164,7 +165,7 @@ function filterTests(allTests: TestInfo[], filters: string[]): TestInfo[] {
   // match tests by name or tag
   return allTests.filter((t) => {
     for (const filter of filters) {
-      if (t.name === filter || hasTag(t, filter)) {
+      if (t.name === filter || hasTag(t, filter as TestTag)) {
         return true;
       }
     }
@@ -221,6 +222,16 @@ async function runTestForAgent(ctx: RunContext): Promise<ValidationResult> {
 
   if (!Object.hasOwn(env, "PULLFROG_MCP_PORT")) {
     env.PULLFROG_MCP_PORT = String(allocateMcpPort());
+  }
+
+  // pass repo setup commands to play.ts for pre-agent execution
+  if (testConfig.repoSetup) {
+    env.PULLFROG_TEST_REPO_SETUP = testConfig.repoSetup;
+  }
+
+  // opencode: set model override so tests use a model with quota (avoids default picking one without quota)
+  if (ctx.agent === "opencode") {
+    env.OPENCODE_MODEL = "google/gemini-3-flash-preview";
   }
 
   // build file-based env vars for MCP servers that don't inherit parent env

@@ -398,10 +398,12 @@ function configureCursorTools(ctx: AgentRunContext): void {
   if (ctx.payload.search === "disabled") deny.push("WebSearch");
   // both "disabled" and "restricted" block native shell
   if (bash !== "enabled") deny.push("Shell(*)");
+  // always block native file tools (use MCP file_read/file_write instead)
+  deny.push("Read(*)", "Write(*)", "StrReplace(*)", "EditNotebook(*)", "Delete(*)");
 
   const config: CursorCliConfig = {
     permissions: {
-      allow: ["Read(**)", "Write(**)"],
+      allow: [],
       deny,
     },
   };

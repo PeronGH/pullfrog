@@ -39,6 +39,9 @@ function buildDisallowedTools(ctx: AgentRunContext): string[] {
   // "restricted" means use MCP bash tool instead
   const bash = ctx.payload.bash;
   if (bash !== "enabled") disallowed.push("Bash", "Task(Bash)");
+  // always block native file tools (use MCP file_read/file_write instead)
+  disallowed.push("Read", "Write", "Edit", "MultiEdit");
+  disallowed.push("Task(Read)", "Task(Write)", "Task(Edit)", "Task(MultiEdit)");
   return disallowed;
 }
 

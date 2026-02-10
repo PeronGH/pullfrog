@@ -85,6 +85,23 @@ type GeminiEvent =
   | GeminiToolResultEvent
   | GeminiResultEvent;
 
+// transient API error patterns that warrant a retry.
+// these are server-side issues, not client errors.
+const TRANSIENT_ERROR_PATTERNS = [
+  "INTERNAL",
+  "status: 500",
+  "status: 503",
+  "UNAVAILABLE",
+  "RESOURCE_EXHAUSTED",
+];
+
+function isTransientApiError(output: string): boolean {
+  return TRANSIENT_ERROR_PATTERNS.some((pattern) => output.includes(pattern));
+}
+
+const MAX_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 5_000;
+
 let assistantMessageBuffer = "";
 
 const messageHandlers = {
@@ -203,85 +220,111 @@ export const gemini = agent({
       ctx.instructions.full,
     ];
 
-    let finalOutput = "";
-    let stdoutBuffer = "";
-    const thinkingTimer = new ThinkingTimer();
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let finalOutput = "";
+      let stdoutBuffer = "";
+      assistantMessageBuffer = "";
+      const thinkingTimer = new ThinkingTimer();
 
-    try {
-      const result = await spawn({
-        cmd: "node",
-        args: [cliPath, ...args],
-        env: process.env,
-        onStdout: async (chunk) => {
-          const text = chunk.toString();
-          finalOutput += text;
+      try {
+        const result = await spawn({
+          cmd: "node",
+          args: [cliPath, ...args],
+          env: process.env,
+          onStdout: async (chunk) => {
+            const text = chunk.toString();
+            finalOutput += text;
 
-          // buffer incomplete lines across chunks (NDJSON format)
-          stdoutBuffer += text;
-          const lines = stdoutBuffer.split("\n");
+            // buffer incomplete lines across chunks (NDJSON format)
+            stdoutBuffer += text;
+            const lines = stdoutBuffer.split("\n");
 
-          // keep the last element (may be incomplete) in the buffer
-          stdoutBuffer = lines.pop() || "";
+            // keep the last element (may be incomplete) in the buffer
+            stdoutBuffer = lines.pop() || "";
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
 
-            log.debug(`[gemini stdout] ${trimmed}`);
+              log.debug(`[gemini stdout] ${trimmed}`);
 
-            try {
-              const event = JSON.parse(trimmed) as GeminiEvent;
-              markActivity(); // reset activity timeout on every event
-              const handler = messageHandlers[event.type as keyof typeof messageHandlers];
-              if (handler) {
-                await handler(event as never, thinkingTimer);
+              try {
+                const event = JSON.parse(trimmed) as GeminiEvent;
+                markActivity(); // reset activity timeout on every event
+                const handler = messageHandlers[event.type as keyof typeof messageHandlers];
+                if (handler) {
+                  await handler(event as never, thinkingTimer);
+                }
+              } catch {
+                // ignore parse errors - might be non-JSON output from gemini cli
+                log.debug(`[gemini] non-JSON stdout line: ${trimmed.substring(0, 200)}`);
               }
-            } catch {
-              // ignore parse errors - might be non-JSON output from gemini cli
-              log.debug(`[gemini] non-JSON stdout line: ${trimmed.substring(0, 200)}`);
             }
-          }
-        },
-        onStderr: (chunk) => {
-          const trimmed = chunk.trim();
-          if (trimmed) {
-            log.debug(`[gemini stderr] ${trimmed}`);
-            log.warning(trimmed);
-            finalOutput += trimmed + "\n";
-          }
-        },
-      });
+          },
+          onStderr: (chunk) => {
+            const trimmed = chunk.trim();
+            if (trimmed) {
+              log.debug(`[gemini stderr] ${trimmed}`);
+              log.warning(trimmed);
+              finalOutput += trimmed + "\n";
+            }
+          },
+        });
 
-      if (result.exitCode !== 0) {
-        const errorMessage =
-          result.stderr ||
-          finalOutput ||
-          result.stdout ||
-          "Unknown error - no output from Gemini CLI";
-        log.error(`Gemini CLI exited with code ${result.exitCode}: ${errorMessage}`);
+        if (result.exitCode !== 0) {
+          const errorMessage =
+            result.stderr ||
+            finalOutput ||
+            result.stdout ||
+            "Unknown error - no output from Gemini CLI";
+
+          // retry on transient API errors (500, 503, INTERNAL, etc.)
+          if (attempt < MAX_ATTEMPTS && isTransientApiError(errorMessage)) {
+            log.warning(
+              `» transient Gemini API error on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in ${RETRY_DELAY_MS / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+            continue;
+          }
+
+          log.error(`Gemini CLI exited with code ${result.exitCode}: ${errorMessage}`);
+          return {
+            success: false,
+            error: errorMessage,
+            output: finalOutput || result.stdout || "",
+          };
+        }
+
+        finalOutput = finalOutput || result.stdout || "Gemini CLI completed successfully.";
+        log.info("» Gemini CLI completed successfully");
+
+        return {
+          success: true,
+          output: finalOutput,
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        // retry on transient API errors from spawn exceptions too
+        if (attempt < MAX_ATTEMPTS && isTransientApiError(errorMessage)) {
+          log.warning(
+            `» transient Gemini API error on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in ${RETRY_DELAY_MS / 1000}s...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+          continue;
+        }
+
+        log.error(`Failed to run Gemini CLI: ${errorMessage}`);
         return {
           success: false,
           error: errorMessage,
-          output: finalOutput || result.stdout || "",
+          output: finalOutput || "",
         };
       }
-
-      finalOutput = finalOutput || result.stdout || "Gemini CLI completed successfully.";
-      log.info("» Gemini CLI completed successfully");
-
-      return {
-        success: true,
-        output: finalOutput,
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log.error(`Failed to run Gemini CLI: ${errorMessage}`);
-      return {
-        success: false,
-        error: errorMessage,
-        output: finalOutput || "",
-      };
     }
+
+    // should never reach here, but satisfy TypeScript
+    return { success: false, error: "exhausted all retry attempts", output: "" };
   },
 });
 
@@ -338,6 +381,8 @@ function configureGeminiSettings(ctx: AgentRunContext): string {
   if (bash !== "enabled") exclude.push("run_shell_command");
   if (ctx.payload.web === "disabled") exclude.push("web_fetch");
   if (ctx.payload.search === "disabled") exclude.push("google_web_search");
+  // always block native file tools (use MCP file_read/file_write instead)
+  exclude.push("read_file", "write_file", "list_directory");
 
   // merge with existing settings, overwriting mcpServers and modelConfig
   const newSettings: Record<string, unknown> = {

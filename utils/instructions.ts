@@ -100,6 +100,15 @@ function getShellInstructions(bash: ResolvedPayload["bash"]): string {
   }
 }
 
+function getFileInstructions(): string {
+  return `**File operations**: Use the \`${ghPullfrogMcpName}\` MCP file tools for all file operations. Do NOT use any native file read/write/edit tools — they are disabled. Available tools:
+- \`file_read\` / \`file_write\` — read and write files
+- \`file_edit\` — targeted text replacement (prefer over read-then-write for existing files)
+- \`file_delete\` — remove files
+- \`list_directory\` — list directory contents
+All file tools enforce repository-scoped access and prevent modifications to .git/.`;
+}
+
 function getStandaloneModeInstructions(trigger: string): string {
   if (trigger !== "unknown") {
     return "";
@@ -200,6 +209,8 @@ Protected branches (default branch) are blocked from direct pushes in restricted
 **Efficiency**: Trust the tools - do not repeatedly verify file contents or git status after operations. If a tool reports success, proceed to the next step. Only verify if you encounter an actual error.
 
 ${getShellInstructions(ctx.payload.bash)}
+
+${getFileInstructions()}
 
 ${getStandaloneModeInstructions(ctx.payload.event.trigger)}
 

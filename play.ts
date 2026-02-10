@@ -43,6 +43,14 @@ export async function run(inputsOrPrompt: Inputs | string): Promise<AgentResult>
   try {
     setupTestRepo({ tempDir });
     process.chdir(tempDir);
+
+    // run repo setup commands if provided (for pre-planting test state like symlinks).
+    // this runs AFTER clone but BEFORE the agent, simulating pre-existing repo content.
+    if (process.env.PULLFROG_TEST_REPO_SETUP) {
+      log.info("» running repo setup commands...");
+      execSync(process.env.PULLFROG_TEST_REPO_SETUP, { cwd: tempDir, stdio: "pipe" });
+    }
+
     // set GITHUB_WORKSPACE to tempDir so main() doesn't try to chdir to the CI checkout path
     process.env.GITHUB_WORKSPACE = tempDir;
 

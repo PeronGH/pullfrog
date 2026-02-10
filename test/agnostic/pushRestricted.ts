@@ -14,7 +14,7 @@ const PROMPT = `Test git push permissions. You MUST use the MCP tools for pushin
 
 1. Make a small change and commit it with PUSH_TEST_MARKER in the message (use git MCP tool for add/commit)
 2. Try pushing to main using push_branch MCP tool - this should be blocked
-3. Create a feature branch (git checkout -b test-feature via git MCP tool)
+3. Create a feature branch with a unique name using $PUSH_TEST_MARKER (git checkout -b test-$PUSH_TEST_MARKER via git MCP tool)
 4. Push the feature branch using push_branch MCP tool - this should succeed
 
 Report what worked and what failed.`;
@@ -36,19 +36,11 @@ function validator(result: AgentResult): ValidationCheck[] {
   const output = getAgentOutput(result);
   const lowerOutput = output.toLowerCase();
 
-  // main branch push should be blocked
-  const mainBlocked =
-    lowerOutput.includes("cannot push directly to default branch") ||
-    lowerOutput.includes("push blocked") ||
-    (lowerOutput.includes("main") && lowerOutput.includes("blocked")) ||
-    (lowerOutput.includes("master") && lowerOutput.includes("blocked"));
+  // MCP tool returns "Push blocked: cannot push directly to default branch ..."
+  const mainBlocked = lowerOutput.includes("push blocked");
 
-  // feature branch push should succeed
-  const featureSucceeded =
-    (lowerOutput.includes("pushed") && !lowerOutput.includes("failed")) ||
-    lowerOutput.includes("successfully pushed") ||
-    output.includes("-> origin/") ||
-    lowerOutput.includes("branch created");
+  // MCP tool returns "successfully pushed <branch> to <remote>/<remoteBranch>"
+  const featureSucceeded = lowerOutput.includes("successfully pushed");
 
   return [
     { name: "main_blocked", passed: mainBlocked },
