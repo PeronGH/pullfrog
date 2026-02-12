@@ -232,6 +232,7 @@ export const codex = agent({
       activityTimeout: 0, // disabled: process-level timeout in main.ts handles this (subprocess timeout would kill orchestrator during delegation)
       onStdout: async (chunk) => {
         finalOutput += chunk;
+        markActivity(); // reset activity timeout on any CLI output
 
         // buffer incomplete lines across chunks (NDJSON format)
         stdoutBuffer += chunk;

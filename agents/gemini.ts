@@ -239,6 +239,7 @@ export const gemini = agent({
           onStdout: async (chunk) => {
             const text = chunk.toString();
             finalOutput += text;
+            markActivity(); // reset activity timeout on any CLI output
 
             // buffer incomplete lines across chunks (NDJSON format)
             stdoutBuffer += text;

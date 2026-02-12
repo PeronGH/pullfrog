@@ -274,6 +274,7 @@ export const cursor = agent({
 
         let stdout = "";
         let stderr = "";
+        let stdoutBuffer = "";
 
         child.on("spawn", () => {
           log.debug("Cursor CLI process spawned");
@@ -282,25 +283,36 @@ export const cursor = agent({
         child.stdout?.on("data", async (data) => {
           const text = data.toString();
           stdout += text;
+          markActivity(); // reset activity timeout on any CLI output
 
-          try {
-            const event = JSON.parse(text) as CursorEvent;
-            markActivity(); // reset activity timeout on every event
-            log.debug(JSON.stringify(event, null, 2));
+          // buffer incomplete lines across chunks (NDJSON format)
+          stdoutBuffer += text;
+          const lines = stdoutBuffer.split("\n");
 
-            // skip empty thinking deltas
-            if (event.type === "thinking" && event.subtype === "delta" && !event.text) {
-              return;
+          // keep the last element (may be incomplete) in the buffer
+          stdoutBuffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            try {
+              const event = JSON.parse(trimmed) as CursorEvent;
+              log.debug(JSON.stringify(event, null, 2));
+
+              // skip empty thinking deltas
+              if (event.type === "thinking" && event.subtype === "delta" && !event.text) {
+                continue;
+              }
+
+              // route to appropriate handler
+              const handler = messageHandlers[event.type as keyof typeof messageHandlers];
+              if (handler) {
+                await handler(event as never);
+              }
+            } catch {
+              // ignore parse errors - might be formatted tool call logs from cursor cli
             }
-
-            // route to appropriate handler
-            const handler = messageHandlers[event.type as keyof typeof messageHandlers];
-            if (handler) {
-              await handler(event as never);
-            }
-          } catch {
-            // ignore parse errors - might be formatted tool call logs from cursor cli
-            // our handlers log tool calls instead, so we don't need to display these
           }
         });
 

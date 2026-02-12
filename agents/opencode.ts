@@ -123,6 +123,7 @@ export const opencode = agent({
         onStdout: async (chunk) => {
           const text = chunk.toString();
           output += text;
+          markActivity(); // reset activity timeout on any CLI output
 
           // buffer incomplete lines across chunks (NDJSON format)
           stdoutBuffer += text;

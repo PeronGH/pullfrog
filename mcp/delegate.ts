@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import { Effort } from "../external.ts";
 import type { Mode } from "../modes.ts";
+import { markActivity } from "../utils/activity.ts";
 import { log } from "../utils/cli.ts";
 import { resolveSubagentInstructions } from "../utils/instructions.ts";
 import type { ToolContext } from "./server.ts";
@@ -71,6 +72,12 @@ export function DelegateTool(ctx: ToolContext) {
         `» delegating to ${selectedMode.name} mode (effort=${effort})${params.instructions ? " with orchestrator instructions" : ""}`
       );
 
+      // keep the process-level activity timeout alive while the subagent runs.
+      // agent CLIs can have long silent thinking phases (>60s) with no stdout,
+      // which would trigger the activity timeout. the overall run timeout (default 1h)
+      // is the real safety net for stalled agents.
+      const keepAliveInterval = setInterval(markActivity, 30_000);
+
       try {
         // build subagent payload with effort override
         const subagentPayload = { ...ctx.payload, effort };
@@ -112,6 +119,7 @@ export function DelegateTool(ctx: ToolContext) {
           error: errorMessage,
         };
       } finally {
+        clearInterval(keepAliveInterval);
         // always release the lock so the orchestrator can delegate again
         ctx.toolState.delegationActive = false;
       }
