@@ -1,5 +1,6 @@
 import type { RestEndpointMethodTypes } from "@octokit/rest";
 import { type } from "arktype";
+import { getApiUrl } from "../utils/apiUrl.ts";
 import { buildPullfrogFooter } from "../utils/buildPullfrogFooter.ts";
 import { log } from "../utils/cli.ts";
 import { deleteProgressComment } from "./comment.ts";
@@ -115,7 +116,7 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
       // only include "Fix all" and "Fix 👍s" links if there are actual review comments
       const customParts: string[] = [];
       if (comments.length > 0) {
-        const apiUrl = process.env.API_URL || "https://pullfrog.com";
+        const apiUrl = getApiUrl();
         const fixAllUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${pull_number}?action=fix&review_id=${reviewId}`;
         const fixApprovedUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${pull_number}?action=fix-approved&review_id=${reviewId}`;
         customParts.push(`[Fix all ➔](${fixAllUrl})`, `[Fix 👍s ➔](${fixApprovedUrl})`);
@@ -410,7 +411,7 @@ export function SubmitReviewTool(ctx: ToolContext) {
       );
 
       // build quick links footer
-      const apiUrl = process.env.API_URL || "https://pullfrog.com";
+      const apiUrl = getApiUrl();
       const fixAllUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${ctx.toolState.issueNumber}?action=fix&review_id=${reviewId}`;
       const fixApprovedUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${ctx.toolState.issueNumber}?action=fix-approved&review_id=${reviewId}`;
 

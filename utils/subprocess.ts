@@ -148,12 +148,16 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
 
     // activity timeout: kill if no output for too long
     if (activityTimeoutMs > 0) {
+      log.debug(`spawn activity timer: pid=${child.pid} cmd=${cmd} timeout=${activityTimeoutMs}ms`);
       activityCheckIntervalId = setInterval(() => {
         const idleMs = performance.now() - lastActivityTime;
+        log.debug(
+          `spawn activity check: pid=${child.pid} idle=${Math.round(idleMs)}ms / ${activityTimeoutMs}ms`
+        );
         if (idleMs > activityTimeoutMs) {
           isActivityTimedOut = true;
           const idleSec = Math.round(idleMs / 1000);
-          log.error(`no output for ${idleSec}s, killing process`);
+          log.error(`no output for ${idleSec}s from pid=${child.pid} (${cmd}), killing process`);
           child.kill("SIGKILL");
           clearInterval(activityCheckIntervalId);
         }

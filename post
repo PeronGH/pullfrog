@@ -41094,27 +41094,30 @@ function separator(length = 50) {
   const separatorText = "\u2500".repeat(length);
   core.info(separatorText);
 }
+function ts() {
+  return isDebugEnabled() ? `[${(/* @__PURE__ */ new Date()).toISOString()}] ` : "";
+}
 var log = {
   /** Print info message */
   info: (...args2) => {
-    core.info(formatArgs(args2));
+    core.info(`${ts()}${formatArgs(args2)}`);
   },
   /** Print warning message */
   warning: (...args2) => {
-    core.warning(formatArgs(args2));
+    core.warning(`${ts()}${formatArgs(args2)}`);
   },
   /** Print error message */
   error: (...args2) => {
-    core.error(formatArgs(args2));
+    core.error(`${ts()}${formatArgs(args2)}`);
   },
   /** Print success message */
   success: (...args2) => {
-    core.info(`\xBB ${formatArgs(args2)}`);
+    core.info(`${ts()}\xBB ${formatArgs(args2)}`);
   },
   /** Print debug message (only if LOG_LEVEL=debug) */
   debug: (...args2) => {
     if (isDebugEnabled()) {
-      core.info(`[DEBUG] ${formatArgs(args2)}`);
+      core.info(`[${(/* @__PURE__ */ new Date()).toISOString()}] [DEBUG] ${formatArgs(args2)}`);
     }
   },
   /** Print a formatted box with text */
@@ -41132,8 +41135,7 @@ var log = {
   /** Log tool call information to console with formatted output */
   toolCall: ({ toolName, input }) => {
     const inputFormatted = formatJsonValue(input);
-    const timestamp = isDebugEnabled() ? ` [${(/* @__PURE__ */ new Date()).toISOString()}]` : "";
-    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})${timestamp}` : `\xBB ${toolName}()${timestamp}`;
+    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})` : `\xBB ${toolName}()`;
     log.info(output.trimEnd());
   }
 };

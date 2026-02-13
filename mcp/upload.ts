@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "arktype";
 import { fileTypeFromBuffer } from "file-type";
+import { getApiUrl } from "../utils/apiUrl.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
@@ -24,7 +25,7 @@ export function UploadFileTool(ctx: ToolContext) {
       const fileType = await fileTypeFromBuffer(buffer);
       const contentType = fileType?.mime || "application/octet-stream";
 
-      const apiUrl = process.env.API_URL || "https://pullfrog.com";
+      const apiUrl = getApiUrl();
 
       const response = await fetch(`${apiUrl}/api/upload/signed-url`, {
         method: "POST",

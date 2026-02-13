@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import type { Agent } from "../agents/index.ts";
+import { getApiUrl } from "../utils/apiUrl.ts";
 import { buildPullfrogFooter, stripExistingFooter } from "../utils/buildPullfrogFooter.ts";
 import { type OctokitWithPlugins, parseRepoContext } from "../utils/github.ts";
 import type { ToolContext } from "./server.ts";
@@ -65,7 +66,7 @@ function buildImplementPlanLink(
   issueNumber: number,
   commentId: number
 ): string {
-  const apiUrl = process.env.API_URL || "https://pullfrog.com";
+  const apiUrl = getApiUrl();
   return `[Implement plan ➔](${apiUrl}/trigger/${owner}/${repo}/${issueNumber}?action=implement&comment_id=${commentId})`;
 }
 

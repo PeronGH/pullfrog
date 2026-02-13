@@ -25626,27 +25626,30 @@ function separator(length = 50) {
   const separatorText = "\u2500".repeat(length);
   core.info(separatorText);
 }
+function ts() {
+  return isDebugEnabled() ? `[${(/* @__PURE__ */ new Date()).toISOString()}] ` : "";
+}
 var log = {
   /** Print info message */
   info: (...args) => {
-    core.info(formatArgs(args));
+    core.info(`${ts()}${formatArgs(args)}`);
   },
   /** Print warning message */
   warning: (...args) => {
-    core.warning(formatArgs(args));
+    core.warning(`${ts()}${formatArgs(args)}`);
   },
   /** Print error message */
   error: (...args) => {
-    core.error(formatArgs(args));
+    core.error(`${ts()}${formatArgs(args)}`);
   },
   /** Print success message */
   success: (...args) => {
-    core.info(`\xBB ${formatArgs(args)}`);
+    core.info(`${ts()}\xBB ${formatArgs(args)}`);
   },
   /** Print debug message (only if LOG_LEVEL=debug) */
   debug: (...args) => {
     if (isDebugEnabled()) {
-      core.info(`[DEBUG] ${formatArgs(args)}`);
+      core.info(`[${(/* @__PURE__ */ new Date()).toISOString()}] [DEBUG] ${formatArgs(args)}`);
     }
   },
   /** Print a formatted box with text */
@@ -25664,8 +25667,7 @@ var log = {
   /** Log tool call information to console with formatted output */
   toolCall: ({ toolName, input }) => {
     const inputFormatted = formatJsonValue(input);
-    const timestamp = isDebugEnabled() ? ` [${(/* @__PURE__ */ new Date()).toISOString()}]` : "";
-    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})${timestamp}` : `\xBB ${toolName}()${timestamp}`;
+    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})` : `\xBB ${toolName}()`;
     log.info(output.trimEnd());
   }
 };
@@ -25677,6 +25679,11 @@ function formatJsonValue(value) {
 // utils/github.ts
 var core2 = __toESM(require_core(), 1);
 import { createSign } from "node:crypto";
+
+// utils/apiUrl.ts
+function getApiUrl() {
+  return process.env.API_URL || "https://pullfrog.com";
+}
 
 // utils/retry.ts
 var defaultShouldRetry = (error2) => {
@@ -25715,7 +25722,7 @@ function isOIDCAvailable() {
 }
 async function acquireTokenViaOIDC(opts) {
   const oidcToken = await core2.getIDToken("pullfrog-api");
-  const apiUrl = process.env.API_URL || "https://pullfrog.com";
+  const apiUrl = getApiUrl();
   const params = new URLSearchParams();
   const repos = [...opts?.repos ?? []];
   const targetRepo = process.env.GITHUB_REPOSITORY?.split("/")[1];

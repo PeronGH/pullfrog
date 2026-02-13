@@ -206,31 +206,36 @@ function separator(length: number = 50): void {
 /**
  * Main logging utility object - import this once and access all utilities
  */
+/** timestamp prefix for debug mode — empty string when debug is off */
+function ts(): string {
+  return isDebugEnabled() ? `[${new Date().toISOString()}] ` : "";
+}
+
 export const log = {
   /** Print info message */
   info: (...args: unknown[]): void => {
-    core.info(formatArgs(args));
+    core.info(`${ts()}${formatArgs(args)}`);
   },
 
   /** Print warning message */
   warning: (...args: unknown[]): void => {
-    core.warning(formatArgs(args));
+    core.warning(`${ts()}${formatArgs(args)}`);
   },
 
   /** Print error message */
   error: (...args: unknown[]): void => {
-    core.error(formatArgs(args));
+    core.error(`${ts()}${formatArgs(args)}`);
   },
 
   /** Print success message */
   success: (...args: unknown[]): void => {
-    core.info(`» ${formatArgs(args)}`);
+    core.info(`${ts()}» ${formatArgs(args)}`);
   },
 
   /** Print debug message (only if LOG_LEVEL=debug) */
   debug: (...args: unknown[]): void => {
     if (isDebugEnabled()) {
-      core.info(`[DEBUG] ${formatArgs(args)}`);
+      core.info(`[${new Date().toISOString()}] [DEBUG] ${formatArgs(args)}`);
     }
   },
 
@@ -255,11 +260,7 @@ export const log = {
   /** Log tool call information to console with formatted output */
   toolCall: ({ toolName, input }: { toolName: string; input: unknown }): void => {
     const inputFormatted = formatJsonValue(input);
-    const timestamp = isDebugEnabled() ? ` [${new Date().toISOString()}]` : "";
-    const output =
-      inputFormatted !== "{}"
-        ? `» ${toolName}(${inputFormatted})${timestamp}`
-        : `» ${toolName}()${timestamp}`;
+    const output = inputFormatted !== "{}" ? `» ${toolName}(${inputFormatted})` : `» ${toolName}()`;
 
     log.info(output.trimEnd());
   },

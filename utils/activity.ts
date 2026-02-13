@@ -1,7 +1,20 @@
 import { performance } from "node:perf_hooks";
+import * as core from "@actions/core";
 
 export const DEFAULT_ACTIVITY_TIMEOUT_MS = 60_000;
 export const DEFAULT_ACTIVITY_CHECK_INTERVAL_MS = 5_000;
+
+// inline debug check — can't import log.ts since activity.ts is a dependency of it
+function debugLog(msg: string): void {
+  const isDebug =
+    process.env.LOG_LEVEL === "debug" ||
+    process.env.ACTIONS_STEP_DEBUG === "true" ||
+    process.env.RUNNER_DEBUG === "1" ||
+    core.isDebug();
+  if (isDebug) {
+    core.info(`[${new Date().toISOString()}] [DEBUG] ${msg}`);
+  }
+}
 
 type ActivityTimeoutContext = {
   timeoutMs: number;
@@ -72,8 +85,11 @@ function startProcessOutputMonitor(ctx: OutputMonitorContext): OutputMonitor {
   process.stdout.write = wrapWrite(originalStdoutWrite, markActivity);
   process.stderr.write = wrapWrite(originalStderrWrite, markActivity);
 
+  debugLog(`process activity monitor started: timeout=${ctx.timeoutMs}ms`);
+
   const intervalId = setInterval(() => {
     const idleMs = getIdleMs();
+    debugLog(`process activity check: idle=${idleMs}ms / ${ctx.timeoutMs}ms`);
     if (timedOut || idleMs <= ctx.timeoutMs) return;
     timedOut = true;
     ctx.onTimeout(idleMs);

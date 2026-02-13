@@ -1,10 +1,11 @@
 import type { Agent } from "../agents/index.ts";
+import { getApiUrl } from "./apiUrl.ts";
 
 /**
  * Build a helpful error message for missing API key with links to repo settings
  */
 function buildMissingApiKeyError(params: { agent: Agent; owner: string; name: string }): string {
-  const apiUrl = process.env.API_URL || "https://pullfrog.com";
+  const apiUrl = getApiUrl();
   const settingsUrl = `${apiUrl}/console/${params.owner}/${params.name}`;
 
   const githubRepoUrl = `https://github.com/${params.owner}/${params.name}`;

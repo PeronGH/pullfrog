@@ -2,6 +2,7 @@ import { createSign } from "node:crypto";
 import * as core from "@actions/core";
 import { throttling } from "@octokit/plugin-throttling";
 import { Octokit } from "@octokit/rest";
+import { getApiUrl } from "./apiUrl.ts";
 import { retry } from "./retry.ts";
 
 export interface InstallationToken {
@@ -84,7 +85,7 @@ type AcquireTokenOptions = {
 async function acquireTokenViaOIDC(opts?: AcquireTokenOptions): Promise<string> {
   const oidcToken = await core.getIDToken("pullfrog-api");
 
-  const apiUrl = process.env.API_URL || "https://pullfrog.com";
+  const apiUrl = getApiUrl();
   const params = new URLSearchParams();
 
   // ensure the token covers GITHUB_REPOSITORY (may differ from OIDC claims repo)

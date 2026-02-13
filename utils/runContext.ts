@@ -1,4 +1,5 @@
 import type { AgentName, BashPermission, PushPermission, ToolPermission } from "../external.ts";
+import { getApiUrl } from "./apiUrl.ts";
 import type { RepoContext } from "./github.ts";
 
 export interface Mode {
@@ -51,7 +52,7 @@ export async function fetchRunContext(params: {
   token: string;
   repoContext: RepoContext;
 }): Promise<RunContext> {
-  const apiUrl = process.env.API_URL || "https://pullfrog.com";
+  const apiUrl = getApiUrl();
   const timeoutMs = 30000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
