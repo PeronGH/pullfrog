@@ -15,7 +15,7 @@ const secret = randomUUID();
 
 const fixture = defineFixture(
   {
-    prompt: `Call the get_test_value tool from the robinMCP server, then call set_output with the exact value returned.`,
+    prompt: `Call the get_test_value tool from the robinMCP server. It returns a JSON object with a "value" field. Extract that inner value string and pass it to set_output.`,
     bash: "disabled",
     effort: "mini",
   },
