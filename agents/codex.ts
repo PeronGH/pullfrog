@@ -29,7 +29,7 @@ const FALLBACK_MODEL = "gpt-5.2-codex";
 
 function getCodexEffortConfig(model: string): Record<Effort, CodexEffortConfig> {
   return {
-    mini: { model: "gpt-5.1-codex", reasoningEffort: "low" },
+    mini: { model: "codex-mini-latest", reasoningEffort: "low" },
     auto: { model },
     max: { model, reasoningEffort: "high" },
   };
