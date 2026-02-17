@@ -290,7 +290,8 @@ function hasThumbsUpFrom(comment: ReviewThreadComment, username: string): boolea
   if (!comment.reactionGroups) return false;
   const thumbsUp = comment.reactionGroups.find((g) => g.content === "THUMBS_UP");
   if (!thumbsUp?.reactors?.nodes) return false;
-  return thumbsUp.reactors.nodes.some((r) => r?.login === username);
+  const usernameNeedle = username.toLowerCase();
+  return thumbsUp.reactors.nodes.some((r) => r?.login?.toLowerCase() === usernameNeedle);
 }
 
 function threadHasThumbsUpFrom(thread: ReviewThread, username: string): boolean {
