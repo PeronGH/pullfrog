@@ -324,9 +324,7 @@ function configureOpenCode(ctx: AgentRunContext): void {
   }
 
   log.info(`» OpenCode config written to ${configPath}`);
-  log.debug(
-    `» OpenCode permissions: edit=${permission.edit}, bash=${permission.bash}, webfetch=${permission.webfetch}`
-  );
+  log.debug(`» disallowed built-ins: ${JSON.stringify(permission)}`);
   log.debug(`OpenCode config contents:\n${configJson}`);
 }
 

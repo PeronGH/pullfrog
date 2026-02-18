@@ -167,6 +167,17 @@ export async function main(): Promise<MainResult> {
       repo: runContext.repo,
       modes,
     });
+    // log instructions as soon as they are fully resolved
+    const logParts = [
+      instructions.eventInstructions
+        ? `EVENT-LEVEL INSTRUCTIONS:\n${instructions.eventInstructions}`
+        : null,
+      instructions.user ? `USER REQUEST:\n${instructions.user}` : null,
+      instructions.event,
+    ].filter(Boolean);
+    log.box(logParts.join("\n\n---\n\n"), {
+      title: "Instructions",
+    });
 
     // run agent, optionally with timeout enforcement
     activityTimeout = createProcessOutputActivityTimeout({

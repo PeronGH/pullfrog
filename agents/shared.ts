@@ -37,18 +37,6 @@ export const agent = <const input extends AgentInput>(input: input): defineAgent
       log.info(`» bash:    ${ctx.payload.bash}`);
       log.debug(`» payload: ${JSON.stringify(ctx.payload, null, 2)}`);
 
-      // build log box content: eventInstructions (if any) + user request (if any) + event data
-      const logParts = [
-        ctx.instructions.eventInstructions
-          ? `EVENT-LEVEL INSTRUCTIONS:\n${ctx.instructions.eventInstructions}`
-          : null,
-        ctx.instructions.user ? `USER REQUEST:\n${ctx.instructions.user}` : null,
-        ctx.instructions.event,
-      ].filter(Boolean);
-      log.box(logParts.join("\n\n---\n\n"), {
-        title: "Instructions",
-      });
-
       return input.run(ctx);
     },
     ...agentsManifest[input.name],

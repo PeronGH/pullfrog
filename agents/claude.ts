@@ -63,7 +63,7 @@ function writeMcpConfig(ctx: AgentRunContext): string {
   };
 
   writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
-  log.info(`» MCP config written to ${configPath}`);
+  log.debug(`» MCP config written to ${configPath}`);
   return configPath;
 }
 
@@ -91,7 +91,7 @@ export const claude = agent({
     // build disallowedTools based on tool permissions
     const disallowedTools = buildDisallowedTools(ctx);
     if (disallowedTools.length > 0) {
-      log.info(`» disallowed tools: ${disallowedTools.join(", ")}`);
+      log.debug(`» disallowed built-ins: ${JSON.stringify(disallowedTools)}`);
     }
 
     // write MCP config file
@@ -253,8 +253,12 @@ const messageHandlers: SDKMessageHandlers = {
               ? content.content
               : Array.isArray(content.content)
                 ? content.content
-                    .map((c) =>
-                      typeof c === "string" ? c : "text" in c ? c.text : JSON.stringify(c)
+                    .map((entry: unknown) =>
+                      typeof entry === "string"
+                        ? entry
+                        : typeof entry === "object" && entry !== null && "text" in entry
+                          ? String(entry.text)
+                          : JSON.stringify(entry)
                     )
                     .join("\n")
                 : String(content.content);

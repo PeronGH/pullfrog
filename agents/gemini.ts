@@ -413,7 +413,7 @@ function configureGeminiSettings(ctx: AgentRunContext): string {
   writeFileSync(settingsPath, JSON.stringify(newSettings, null, 2), "utf-8");
   log.info(`» Gemini settings written to ${settingsPath}`);
   if (exclude.length > 0) {
-    log.info(`» excluded tools: ${exclude.join(", ")}`);
+    log.debug(`» disallowed built-ins: ${JSON.stringify(exclude)}`);
   }
 
   return model;

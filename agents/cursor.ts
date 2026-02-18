@@ -440,5 +440,6 @@ function configureCursorTools(ctx: AgentRunContext): void {
 
   writeFileSync(cliConfigPath, JSON.stringify(config, null, 2), "utf-8");
   log.info(`» CLI config written to ${cliConfigPath}`);
+  log.debug(`» disallowed built-ins: ${JSON.stringify(deny)}`);
   log.debug(`» CLI config contents: ${JSON.stringify(config, null, 2)}`);
 }
