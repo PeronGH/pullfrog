@@ -25838,7 +25838,7 @@ var require_light = __commonJS({
           }
           return this.Events.trigger("scheduled", { args: this.args, options: this.options });
         }
-        async doExecute(chained, clearGlobalState, run2, free) {
+        async doExecute(chained, clearGlobalState, run, free) {
           var error2, eventInfo, passed;
           if (this.retryCount === 0) {
             this._assertStatus("RUNNING");
@@ -25858,10 +25858,10 @@ var require_light = __commonJS({
             }
           } catch (error1) {
             error2 = error1;
-            return this._onFailure(error2, eventInfo, clearGlobalState, run2, free);
+            return this._onFailure(error2, eventInfo, clearGlobalState, run, free);
           }
         }
-        doExpire(clearGlobalState, run2, free) {
+        doExpire(clearGlobalState, run, free) {
           var error2, eventInfo;
           if (this._states.jobStatus(this.options.id === "RUNNING")) {
             this._states.next(this.options.id);
@@ -25869,9 +25869,9 @@ var require_light = __commonJS({
           this._assertStatus("EXECUTING");
           eventInfo = { args: this.args, options: this.options, retryCount: this.retryCount };
           error2 = new BottleneckError$1(`This job timed out after ${this.options.expiration} ms.`);
-          return this._onFailure(error2, eventInfo, clearGlobalState, run2, free);
+          return this._onFailure(error2, eventInfo, clearGlobalState, run, free);
         }
-        async _onFailure(error2, eventInfo, clearGlobalState, run2, free) {
+        async _onFailure(error2, eventInfo, clearGlobalState, run, free) {
           var retry2, retryAfter;
           if (clearGlobalState()) {
             retry2 = await this.Events.trigger("failed", error2, eventInfo);
@@ -25879,7 +25879,7 @@ var require_light = __commonJS({
               retryAfter = ~~retry2;
               this.Events.trigger("retry", `Retrying ${this.options.id} after ${retryAfter} ms`, eventInfo);
               this.retryCount++;
-              return run2(retryAfter);
+              return run(retryAfter);
             } else {
               this.doDone(eventInfo);
               await free(this.options, eventInfo);
@@ -26517,17 +26517,17 @@ var require_light = __commonJS({
             }
           }
           _run(index, job, wait) {
-            var clearGlobalState, free, run2;
+            var clearGlobalState, free, run;
             job.doRun();
             clearGlobalState = this._clearGlobalState.bind(this, index);
-            run2 = this._run.bind(this, index, job);
+            run = this._run.bind(this, index, job);
             free = this._free.bind(this, index, job);
             return this._scheduled[index] = {
               timeout: setTimeout(() => {
-                return job.doExecute(this._limiter, clearGlobalState, run2, free);
+                return job.doExecute(this._limiter, clearGlobalState, run, free);
               }, wait),
               expiration: job.options.expiration != null ? setTimeout(function() {
-                return job.doExpire(clearGlobalState, run2, free);
+                return job.doExpire(clearGlobalState, run, free);
               }, wait + job.options.expiration) : void 0,
               job
             };
@@ -28842,6 +28842,178 @@ var require_semver2 = __commonJS({
     };
   }
 });
+
+// utils/log.ts
+var core = __toESM(require_core(), 1);
+var import_table = __toESM(require_src(), 1);
+
+// utils/globals.ts
+import { existsSync } from "node:fs";
+var isCloudflareSandbox = !!process.env.CLOUDFLARE_APPLICATION_ID && !!process.env.SANDBOX_VERSION;
+var isGitHubActions = !!process.env.GITHUB_ACTIONS;
+var isInsideDocker = existsSync("/.dockerenv");
+
+// utils/log.ts
+var isDebugEnabled = () => process.env.LOG_LEVEL === "debug" || process.env.ACTIONS_STEP_DEBUG === "true" || core.isDebug();
+function formatArgs(args2) {
+  return args2.map((arg) => {
+    if (typeof arg === "string") return arg;
+    if (arg instanceof Error) return `${arg.message}
+${arg.stack}`;
+    return JSON.stringify(arg);
+  }).join(" ");
+}
+function startGroup2(name) {
+  if (isGitHubActions) {
+    core.startGroup(name);
+  } else {
+    console.group(name);
+  }
+}
+function endGroup2() {
+  if (isGitHubActions) {
+    core.endGroup();
+  } else {
+    console.groupEnd();
+  }
+}
+function group(name, fn2) {
+  startGroup2(name);
+  fn2();
+  endGroup2();
+}
+function boxString(text, options) {
+  const { title, maxWidth = 80, indent: indent2 = "", padding = 1 } = options || {};
+  const lines = text.trim().split("\n");
+  const wrappedLines = [];
+  for (const line of lines) {
+    if (line.length <= maxWidth - padding * 2) {
+      wrappedLines.push(line);
+    } else {
+      const words = line.split(" ");
+      let currentLine = "";
+      for (const word of words) {
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        if (testLine.length <= maxWidth - padding * 2) {
+          currentLine = testLine;
+        } else {
+          if (currentLine) {
+            wrappedLines.push(currentLine);
+            currentLine = "";
+          }
+          const maxLineLength2 = maxWidth - padding * 2;
+          let remainingWord = word;
+          while (remainingWord.length > maxLineLength2) {
+            wrappedLines.push(remainingWord.substring(0, maxLineLength2));
+            remainingWord = remainingWord.substring(maxLineLength2);
+          }
+          currentLine = remainingWord;
+        }
+      }
+      if (currentLine) {
+        wrappedLines.push(currentLine);
+      }
+    }
+  }
+  const maxLineLength = Math.max(...wrappedLines.map((line) => line.length));
+  const contentBoxWidth = maxLineLength + padding * 2;
+  const titleLineLength = title ? ` ${title} `.length : 0;
+  const boxWidth = Math.max(contentBoxWidth, titleLineLength);
+  let result = "";
+  if (title) {
+    const titleLine = ` ${title} `;
+    const titlePadding = Math.max(0, boxWidth - titleLine.length);
+    result += `${indent2}\u250C${titleLine}${"\u2500".repeat(titlePadding)}\u2510
+`;
+  }
+  if (!title) {
+    result += `${indent2}\u250C${"\u2500".repeat(boxWidth)}\u2510
+`;
+  }
+  for (const line of wrappedLines) {
+    const paddedLine = line.padEnd(maxLineLength);
+    result += `${indent2}\u2502${" ".repeat(padding)}${paddedLine}${" ".repeat(padding)}\u2502
+`;
+  }
+  result += `${indent2}\u2514${"\u2500".repeat(boxWidth)}\u2518`;
+  return result;
+}
+function box(text, options) {
+  const boxContent = boxString(text, options);
+  core.info(boxContent);
+}
+function printTable(rows, options) {
+  const { title } = options || {};
+  const tableData = rows.map(
+    (row) => row.map((cell) => {
+      if (typeof cell === "string") {
+        return cell;
+      }
+      return cell.data;
+    })
+  );
+  const formatted = (0, import_table.table)(tableData);
+  if (title) {
+    core.info(`
+${title}`);
+  }
+  core.info(`
+${formatted}
+`);
+}
+function separator(length = 50) {
+  const separatorText = "\u2500".repeat(length);
+  core.info(separatorText);
+}
+function ts() {
+  return isDebugEnabled() ? `[${(/* @__PURE__ */ new Date()).toISOString()}] ` : "";
+}
+var log = {
+  /** Print info message */
+  info: (...args2) => {
+    core.info(`${ts()}${formatArgs(args2)}`);
+  },
+  /** Print warning message */
+  warning: (...args2) => {
+    core.warning(`${ts()}${formatArgs(args2)}`);
+  },
+  /** Print error message */
+  error: (...args2) => {
+    core.error(`${ts()}${formatArgs(args2)}`);
+  },
+  /** Print success message */
+  success: (...args2) => {
+    core.info(`${ts()}\xBB ${formatArgs(args2)}`);
+  },
+  /** Print debug message (only if LOG_LEVEL=debug) */
+  debug: (...args2) => {
+    if (isDebugEnabled()) {
+      core.info(`[${(/* @__PURE__ */ new Date()).toISOString()}] [DEBUG] ${formatArgs(args2)}`);
+    }
+  },
+  /** Print a formatted box with text */
+  box,
+  /** Print a formatted table using the table package */
+  table: printTable,
+  /** Print a separator line */
+  separator,
+  /** Start a collapsed group (GitHub Actions) or regular group (local) */
+  startGroup: startGroup2,
+  /** End a collapsed group */
+  endGroup: endGroup2,
+  /** Run a callback within a collapsed group */
+  group,
+  /** Log tool call information to console with formatted output */
+  toolCall: ({ toolName, input }) => {
+    const inputFormatted = formatJsonValue(input);
+    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})` : `\xBB ${toolName}()`;
+    log.info(output.trimEnd());
+  }
+};
+function formatJsonValue(value2) {
+  const compact = JSON.stringify(value2);
+  return compact.length > 80 || compact.includes("\n") ? JSON.stringify(value2, null, 2) : compact;
+}
 
 // node_modules/.pnpm/@ark+util@0.56.0/node_modules/@ark/util/out/arrays.js
 var liftArray = (data) => Array.isArray(data) ? data : [data];
@@ -37299,178 +37471,6 @@ var schema = ark.schema;
 var define2 = ark.define;
 var declare = ark.declare;
 
-// utils/log.ts
-var core = __toESM(require_core(), 1);
-var import_table = __toESM(require_src(), 1);
-
-// utils/globals.ts
-import { existsSync } from "node:fs";
-var isCloudflareSandbox = !!process.env.CLOUDFLARE_APPLICATION_ID && !!process.env.SANDBOX_VERSION;
-var isGitHubActions = !!process.env.GITHUB_ACTIONS;
-var isInsideDocker = existsSync("/.dockerenv");
-
-// utils/log.ts
-var isDebugEnabled = () => process.env.LOG_LEVEL === "debug" || process.env.ACTIONS_STEP_DEBUG === "true" || core.isDebug();
-function formatArgs(args2) {
-  return args2.map((arg) => {
-    if (typeof arg === "string") return arg;
-    if (arg instanceof Error) return `${arg.message}
-${arg.stack}`;
-    return JSON.stringify(arg);
-  }).join(" ");
-}
-function startGroup2(name) {
-  if (isGitHubActions) {
-    core.startGroup(name);
-  } else {
-    console.group(name);
-  }
-}
-function endGroup2() {
-  if (isGitHubActions) {
-    core.endGroup();
-  } else {
-    console.groupEnd();
-  }
-}
-function group(name, fn2) {
-  startGroup2(name);
-  fn2();
-  endGroup2();
-}
-function boxString(text, options) {
-  const { title, maxWidth = 80, indent: indent2 = "", padding = 1 } = options || {};
-  const lines = text.trim().split("\n");
-  const wrappedLines = [];
-  for (const line of lines) {
-    if (line.length <= maxWidth - padding * 2) {
-      wrappedLines.push(line);
-    } else {
-      const words = line.split(" ");
-      let currentLine = "";
-      for (const word of words) {
-        const testLine = currentLine ? `${currentLine} ${word}` : word;
-        if (testLine.length <= maxWidth - padding * 2) {
-          currentLine = testLine;
-        } else {
-          if (currentLine) {
-            wrappedLines.push(currentLine);
-            currentLine = "";
-          }
-          const maxLineLength2 = maxWidth - padding * 2;
-          let remainingWord = word;
-          while (remainingWord.length > maxLineLength2) {
-            wrappedLines.push(remainingWord.substring(0, maxLineLength2));
-            remainingWord = remainingWord.substring(maxLineLength2);
-          }
-          currentLine = remainingWord;
-        }
-      }
-      if (currentLine) {
-        wrappedLines.push(currentLine);
-      }
-    }
-  }
-  const maxLineLength = Math.max(...wrappedLines.map((line) => line.length));
-  const contentBoxWidth = maxLineLength + padding * 2;
-  const titleLineLength = title ? ` ${title} `.length : 0;
-  const boxWidth = Math.max(contentBoxWidth, titleLineLength);
-  let result = "";
-  if (title) {
-    const titleLine = ` ${title} `;
-    const titlePadding = Math.max(0, boxWidth - titleLine.length);
-    result += `${indent2}\u250C${titleLine}${"\u2500".repeat(titlePadding)}\u2510
-`;
-  }
-  if (!title) {
-    result += `${indent2}\u250C${"\u2500".repeat(boxWidth)}\u2510
-`;
-  }
-  for (const line of wrappedLines) {
-    const paddedLine = line.padEnd(maxLineLength);
-    result += `${indent2}\u2502${" ".repeat(padding)}${paddedLine}${" ".repeat(padding)}\u2502
-`;
-  }
-  result += `${indent2}\u2514${"\u2500".repeat(boxWidth)}\u2518`;
-  return result;
-}
-function box(text, options) {
-  const boxContent = boxString(text, options);
-  core.info(boxContent);
-}
-function printTable(rows, options) {
-  const { title } = options || {};
-  const tableData = rows.map(
-    (row) => row.map((cell) => {
-      if (typeof cell === "string") {
-        return cell;
-      }
-      return cell.data;
-    })
-  );
-  const formatted = (0, import_table.table)(tableData);
-  if (title) {
-    core.info(`
-${title}`);
-  }
-  core.info(`
-${formatted}
-`);
-}
-function separator(length = 50) {
-  const separatorText = "\u2500".repeat(length);
-  core.info(separatorText);
-}
-function ts() {
-  return isDebugEnabled() ? `[${(/* @__PURE__ */ new Date()).toISOString()}] ` : "";
-}
-var log = {
-  /** Print info message */
-  info: (...args2) => {
-    core.info(`${ts()}${formatArgs(args2)}`);
-  },
-  /** Print warning message */
-  warning: (...args2) => {
-    core.warning(`${ts()}${formatArgs(args2)}`);
-  },
-  /** Print error message */
-  error: (...args2) => {
-    core.error(`${ts()}${formatArgs(args2)}`);
-  },
-  /** Print success message */
-  success: (...args2) => {
-    core.info(`${ts()}\xBB ${formatArgs(args2)}`);
-  },
-  /** Print debug message (only if LOG_LEVEL=debug) */
-  debug: (...args2) => {
-    if (isDebugEnabled()) {
-      core.info(`[${(/* @__PURE__ */ new Date()).toISOString()}] [DEBUG] ${formatArgs(args2)}`);
-    }
-  },
-  /** Print a formatted box with text */
-  box,
-  /** Print a formatted table using the table package */
-  table: printTable,
-  /** Print a separator line */
-  separator,
-  /** Start a collapsed group (GitHub Actions) or regular group (local) */
-  startGroup: startGroup2,
-  /** End a collapsed group */
-  endGroup: endGroup2,
-  /** Run a callback within a collapsed group */
-  group,
-  /** Log tool call information to console with formatted output */
-  toolCall: ({ toolName, input }) => {
-    const inputFormatted = formatJsonValue(input);
-    const output = inputFormatted !== "{}" ? `\xBB ${toolName}(${inputFormatted})` : `\xBB ${toolName}()`;
-    log.info(output.trimEnd());
-  }
-};
-function formatJsonValue(value2) {
-  const compact = JSON.stringify(value2);
-  return compact.length > 80 || compact.includes("\n") ? JSON.stringify(value2, null, 2) : compact;
-}
-
 // utils/buildPullfrogFooter.ts
 var PULLFROG_DIVIDER = "<!-- PULLFROG_DIVIDER_DO_NOT_REMOVE_PLZ -->";
 var FROG_LOGO = `<a href="https://pullfrog.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://pullfrog.com/logos/frog-white-full-18px.png"><img src="https://pullfrog.com/logos/frog-green-full-18px.png" width="9px" height="9px" style="vertical-align: middle; " alt="Pullfrog"></picture></a>`;
@@ -41413,7 +41413,7 @@ function resolvePromptInput() {
   return jsonPayload;
 }
 
-// post.ts
+// utils/postCleanup.ts
 var SHOULD_CHECK_REASON = true;
 async function validateStuckProgressComment(promptInput, octokit, owner, repo) {
   if (!promptInput?.progressCommentId) {
@@ -41441,6 +41441,7 @@ async function validateStuckProgressComment(promptInput, octokit, owner, repo) {
   }
 }
 async function getIsCancelled(params) {
+  if (!params.runIdStr) return false;
   try {
     const { data: jobs } = await params.octokit.rest.actions.listJobsForWorkflowRun({
       owner: params.repoContext.owner,
@@ -41471,7 +41472,6 @@ async function getIsCancelled(params) {
 async function runPostCleanup() {
   log.info("\xBB [post] starting post cleanup");
   const runIdStr = process.env.GITHUB_RUN_ID;
-  if (!runIdStr) return log.info("\xBB [post] no GITHUB_RUN_ID available, skipping cleanup");
   let promptInput = null;
   try {
     const resolved = resolvePromptInput();
@@ -41511,16 +41511,15 @@ async function runPostCleanup() {
     log.error(`[post] failed to update comment: ${errorMessage}`);
   }
 }
-async function run() {
-  try {
-    await runPostCleanup();
-  } catch (error2) {
-    const message = error2 instanceof Error ? error2.message : String(error2);
-    log.error(`[post] unexpected error: ${message}`);
-  }
-}
+
+// post.ts
 log.debug(`[post] script started at ${(/* @__PURE__ */ new Date()).toISOString()}`);
-await run();
+try {
+  await runPostCleanup();
+} catch (error2) {
+  const message = error2 instanceof Error ? error2.message : String(error2);
+  log.error(`[post] unexpected error: ${message}`);
+}
 /*! Bundled license information:
 
 undici/lib/fetch/body.js:

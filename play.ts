@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import arg from "arg";
 import { config } from "dotenv";
 import type { AgentResult } from "./agents/shared.ts";
@@ -12,6 +12,7 @@ import { log } from "./utils/cli.ts";
 import { runInDocker } from "./utils/docker.ts";
 import { ensureGitHubToken } from "./utils/github.ts";
 import { isInsideDocker } from "./utils/globals.ts";
+import { runPostCleanup } from "./utils/postCleanup.ts";
 import { setupTestRepo } from "./utils/setup.ts";
 
 /**
@@ -68,7 +69,13 @@ export async function run(inputsOrPrompt: Inputs | string): Promise<AgentResult>
       }
     }
 
-    const result = await main();
+    // wrap main() so post cleanup runs even on failure (mirrors action.yml post-if: "failure() || cancelled()")
+    let result: AgentResult;
+    try {
+      result = await main();
+    } finally {
+      await runPostCleanup();
+    }
 
     process.chdir(originalCwd);
 
@@ -95,7 +102,11 @@ export async function run(inputsOrPrompt: Inputs | string): Promise<AgentResult>
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectExecution = process.argv[1]
+  ? import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+  : false;
+
+if (isDirectExecution) {
   const args = arg({
     "--help": Boolean,
     "--raw": String,
