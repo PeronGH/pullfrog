@@ -110,7 +110,8 @@ function resolveNonPromptInputs() {
 }
 
 const isPullfrog = (actor: string | null | undefined): boolean => {
-  return !!actor && (actor === "pullfrog" || actor === "pullfrog[bot]");
+  actor = actor?.replace("[bot]", "");
+  return !!actor && (actor === "pullfrog" || actor === "pullfrogdev");
 };
 
 export function resolvePayload(
