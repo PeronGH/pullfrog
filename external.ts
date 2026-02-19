@@ -272,6 +272,8 @@ export interface WriteablePayload {
   agent?: AgentName | undefined;
   /** the user's actual request (body if @pullfrog tagged) */
   prompt: string;
+  /** github username of the human who triggered this workflow run */
+  triggeringUser?: string | undefined;
   /** event-level instructions for this trigger type (flag-expanded server-side) */
   eventInstructions?: string | undefined;
   /** repo-level instructions (flag-expanded server-side) */

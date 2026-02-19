@@ -44,6 +44,22 @@ export function CreatePullRequestTool(ctx: ToolContext) {
         base: base,
       });
 
+      // best-effort: request review from the user who triggered the workflow
+      const reviewer = ctx.payload.triggeringUser;
+      if (reviewer) {
+        try {
+          log.debug(`Requesting review from ${reviewer} on PR #${result.data.number}`);
+          await ctx.octokit.rest.pulls.requestReviewers({
+            owner: ctx.repo.owner,
+            repo: ctx.repo.name,
+            pull_number: result.data.number,
+            reviewers: [reviewer],
+          });
+        } catch {
+          log.info(`failed to request review from ${reviewer} on PR #${result.data.number}`);
+        }
+      }
+
       return {
         success: true,
         pullRequestId: result.data.id,

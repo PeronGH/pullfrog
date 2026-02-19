@@ -19,6 +19,7 @@ export const JsonPayload = type({
   version: "string",
   "agent?": AgentName.or("undefined"),
   prompt: "string",
+  "triggeringUser?": "string | undefined",
   "eventInstructions?": "string",
   "repoInstructions?": "string",
   "event?": "object",
@@ -108,6 +109,10 @@ function resolveNonPromptInputs() {
   });
 }
 
+const isPullfrog = (actor: string | null | undefined): boolean => {
+  return !!actor && (actor === "pullfrog" || actor === "pullfrog[bot]");
+};
+
 export function resolvePayload(
   resolvedPromptInput: ResolvedPromptInput,
   repoSettings: RepoSettings
@@ -161,6 +166,10 @@ export function resolvePayload(
     version: jsonPayload?.version ?? packageJson.version,
     agent: resolvedAgent,
     prompt,
+    triggeringUser:
+      jsonPayload?.triggeringUser ??
+      // it's not a common use case but GITHUB_ACTOR can be a user when the workflow is manually triggered by a user through GitHub Actions UI
+      (!isPullfrog(process.env.GITHUB_ACTOR) ? process.env.GITHUB_ACTOR : undefined),
     eventInstructions: jsonPayload?.eventInstructions,
     repoInstructions: jsonPayload?.repoInstructions,
     event,
