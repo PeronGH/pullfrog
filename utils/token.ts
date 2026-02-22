@@ -13,25 +13,6 @@ export { revokeGitHubInstallationToken as revokeInstallationToken };
 // store MCP token in memory for getGitHubInstallationToken()
 let mcpTokenValue: string | undefined;
 
-function setEnvironmentVariable(name: string, value: string | undefined) {
-  const hadValue = Object.hasOwn(process.env, name);
-  const originalValue = process.env[name];
-
-  if (typeof value === "string") {
-    process.env[name] = value;
-  } else {
-    delete process.env[name];
-  }
-
-  return () => {
-    if (hadValue) {
-      process.env[name] = originalValue;
-    } else {
-      delete process.env[name];
-    }
-  };
-}
-
 /**
  * get the job-scoped token from action input.
  * this token has permissions defined by the workflow's permissions block.
@@ -84,7 +65,6 @@ export async function resolveTokens(params: ResolveTokensParams): Promise<TokenR
 
   // external token takes precedence - use for both git and MCP
   if (externalToken) {
-    const revertGithubToken = setEnvironmentVariable("GITHUB_TOKEN", externalToken);
     mcpTokenValue = externalToken;
 
     if (isGitHubActions) {
@@ -98,7 +78,6 @@ export async function resolveTokens(params: ResolveTokensParams): Promise<TokenR
       mcpToken: externalToken,
       async [Symbol.asyncDispose]() {
         mcpTokenValue = undefined;
-        revertGithubToken();
         // GH_TOKEN isn't acquired here, so it's not revoked here either
       },
     };
@@ -128,8 +107,6 @@ export async function resolveTokens(params: ResolveTokensParams): Promise<TokenR
   }
   log.info("» acquired full MCP token");
 
-  // set MCP token as GITHUB_TOKEN for compatibility
-  const revertGithubToken = setEnvironmentVariable("GITHUB_TOKEN", mcpToken);
   mcpTokenValue = mcpToken;
 
   let disposingRef: PromiseWithResolvers<void> | undefined;
@@ -143,7 +120,7 @@ export async function resolveTokens(params: ResolveTokensParams): Promise<TokenR
     disposingRef = Promise.withResolvers();
     try {
       mcpTokenValue = undefined;
-      revertGithubToken();
+      // revoke both tokens
       await Promise.all([
         revokeGitHubInstallationToken(gitToken),
         revokeGitHubInstallationToken(mcpToken),
