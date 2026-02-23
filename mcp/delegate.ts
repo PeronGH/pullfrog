@@ -1,60 +1,115 @@
 import { type } from "arktype";
 import { Effort } from "../external.ts";
 import { log } from "../utils/cli.ts";
-import type { ToolContext } from "./server.ts";
+import type { SubagentState, ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
-import { createSubagentState, runSubagent } from "./subagent.ts";
+import { createSubagentState, hasRunningSubagents, runSubagent } from "./subagent.ts";
 
-export const DelegateParams = type({
+const DelegateTask = type({
+  label: type.string.describe(
+    "short label identifying this task (e.g. 'frontend-review', 'schema-check'). returned in results for easy matching."
+  ),
   instructions: type.string.describe(
-    "the complete prompt for the subagent. the subagent receives ONLY this text — include all context it needs (file paths, constraints, conventions, tool usage instructions). craft a focused, self-contained task description."
+    "the complete prompt for the subagent. the subagent receives ONLY this text (plus a system preamble) — include all context it needs (file paths, constraints, conventions, tool usage instructions). specify exactly what information to return. craft a focused, self-contained task description."
   ),
   "effort?": Effort.describe(
-    'effort level for the subagent: "mini" (low-effort and fast, only for simple tasks), "auto" (medium-effort, good for typical tasks that don\'t require significant reasoning), or "max" (high-effort, good for PR reviews and complex coding tasks)'
+    'effort level for the subagent: "mini" (low-effort and fast, only for simple tasks), "auto" (medium-effort, good for typical tasks that don\'t require significant reasoning), or "max" (high-effort, good for PR reviews and complex coding tasks). defaults to "auto".'
   ),
 });
+
+export const DelegateParams = type({
+  tasks: DelegateTask.array()
+    .atLeastLength(1)
+    .describe(
+      "array of tasks to delegate. all tasks run as parallel subagents and results are returned together."
+    ),
+});
+
+type DelegateTaskResult = {
+  label: string;
+  success: boolean;
+  effort: string;
+  summary: string;
+  stdoutFile: string;
+  error: string | undefined;
+};
+
+function buildTaskResult(
+  label: string,
+  effort: string,
+  subagent: SubagentState,
+  error: string | undefined
+): DelegateTaskResult {
+  return {
+    label,
+    success: subagent.status === "completed",
+    effort,
+    summary:
+      subagent.output ??
+      error ??
+      "no output produced — the subagent may not have called set_output. check stdoutFile for full logs.",
+    stdoutFile: subagent.stdoutFilePath,
+    error,
+  };
+}
 
 export function DelegateTool(ctx: ToolContext) {
   return tool({
     name: "delegate",
     description:
-      "Delegate a task to a subagent. The subagent receives ONLY the instructions you provide — no other context is added. Use select_mode first to get guidance on how to craft the instructions for a given mode. Subagents have access to file operations, local git, bash, commenting, and review tools. They do NOT have push_branch, create_pull_request, update_pull_request_body, delete_branch, push_tags, delegate, ask_question, or select_mode — remote-mutating operations are your responsibility as orchestrator.",
+      "Delegate research, local coding tasks, and codebase investigations to subagents. Accepts an array of tasks that run in parallel — use this to fan out work (e.g. reviewing different areas of a PR simultaneously). Each subagent receives ONLY the instructions you provide (plus a system preamble enforcing set_output). Use select_mode first to get guidance on how to craft instructions. Subagents have file operations, bash, read-only GitHub tools (PR/issue info, review comments, check suite logs), and upload_file. They have NO git/checkout tools (would conflict between parallel subagents), NO dependency tools, and NO GitHub-write tools (commenting, reviews, labels, issues). All state-mutating and user-facing operations are your responsibility as orchestrator.",
     parameters: DelegateParams,
     execute: execute(async (params) => {
-      if (ctx.toolState.activeSubagentId) {
+      if (ctx.toolState.selfSubagentId) {
         return {
           error:
             "delegation is not available inside a subagent. you are already running as a delegated subagent. complete the task directly using the available tools.",
         };
       }
 
-      const effort = params.effort ?? "auto";
+      if (hasRunningSubagents(ctx)) {
+        return { error: "delegation is already in progress" };
+      }
+
       const mode = ctx.toolState.selectedMode ?? "unknown";
       if (!ctx.toolState.selectedMode) {
         log.info(`» warning: delegating without calling select_mode first (mode=${mode})`);
       }
-      const subagent = createSubagentState({ ctx, mode });
 
-      log.info(`» delegating subagent=${subagent.id} (mode=${mode}, effort=${effort})`);
-      const result = await runSubagent({
-        ctx,
-        subagent,
-        effort,
-        instructions: params.instructions,
+      // matched by delegate test validators — update tests if changed
+      log.info(`» delegating ${params.tasks.length} task(s) in parallel (mode=${mode})`);
+
+      const taskEntries = params.tasks.map((task) => {
+        const effort = task.effort ?? "auto";
+        const subagent = createSubagentState({ ctx, mode, label: task.label });
+        log.info(`» task "${task.label}" (effort=${effort})`);
+        return { task, effort, subagent };
       });
-      log.info(`» delegation completed (mode=${mode}, success=${result.success})`);
 
-      return {
-        success: result.success,
-        mode,
-        effort,
-        summary:
-          subagent.output ??
-          result.error ??
-          "no output produced — the subagent may not have called set_output. check stdoutFile for full logs.",
-        stdoutFile: subagent.stdoutFilePath,
-        error: result.error,
-      };
+      const settled = await Promise.allSettled(
+        taskEntries.map((entry) =>
+          runSubagent({
+            ctx,
+            subagent: entry.subagent,
+            effort: entry.effort,
+            instructions: entry.task.instructions,
+          })
+        )
+      );
+
+      const results: DelegateTaskResult[] = taskEntries.map((entry, i) => {
+        const outcome = settled[i];
+        const error = outcome.status === "rejected" ? String(outcome.reason) : outcome.value.error;
+        log.debug(
+          `» task "${entry.task.label}" result: output=${entry.subagent.output !== undefined}, status=${entry.subagent.status}`
+        );
+        return buildTaskResult(entry.task.label, entry.effort, entry.subagent, error);
+      });
+
+      const succeeded = results.filter((r) => r.success).length;
+      log.info(`» delegation completed: ${succeeded}/${results.length} succeeded (mode=${mode})`);
+
+      return { mode, results };
     }),
   });
 }

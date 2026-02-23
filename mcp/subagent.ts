@@ -1,7 +1,9 @@
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Effort } from "../external.ts";
+import { ghPullfrogMcpName } from "../external.ts";
 import { markActivity } from "../utils/activity.ts";
 import type { ResolvedInstructions } from "../utils/instructions.ts";
 import { type SubagentState, startSubagentMcpServer, type ToolContext } from "./server.ts";
@@ -9,13 +11,24 @@ import { type SubagentState, startSubagentMcpServer, type ToolContext } from "./
 type CreateSubagentParams = {
   ctx: ToolContext;
   mode: string;
+  label: string;
 };
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
 
 export function createSubagentState(params: CreateSubagentParams): SubagentState {
   const id = randomUUID();
-  const stdoutFilePath = join(params.ctx.tmpdir, `subagent-${id}.log`);
+  const slug = slugify(params.label);
+  const stdoutFilePath = join(params.ctx.tmpdir, `subagent-${slug || id}.log`);
   const state: SubagentState = {
     id,
+    label: params.label,
     status: "running",
     mode: params.mode,
     stdoutFilePath,
@@ -25,7 +38,6 @@ export function createSubagentState(params: CreateSubagentParams): SubagentState
     keepAliveInterval: undefined,
   };
   params.ctx.toolState.subagents.set(id, state);
-  params.ctx.toolState.activeSubagentId = id;
   return state;
 }
 
@@ -44,15 +56,62 @@ function completeSubagent(params: CompleteSubagentParams): void {
   if (params.subagent.usage) {
     params.ctx.toolState.usageEntries.push(params.subagent.usage);
   }
-  params.ctx.toolState.activeSubagentId = undefined;
-  // keep completed subagents in the map for post-completion inspection
 }
 
-export function buildSubagentInstructions(orchestratorPrompt: string): ResolvedInstructions {
+export function hasRunningSubagents(ctx: ToolContext): boolean {
+  for (const s of ctx.toolState.subagents.values()) {
+    if (s.status === "running") return true;
+  }
+  return false;
+}
+
+const subagentSystemPreamble = `You are a focused subagent. Complete the task autonomously — no follow-up questions. Minimize token usage.
+
+## Tools
+
+Your tools are limited to:
+- **File operations**: \`${ghPullfrogMcpName}/file_read\`, \`file_write\`, \`file_edit\`, \`file_delete\`, \`list_directory\`. Native file tools (Read, Write, StrReplace, etc.) are disabled — use the MCP versions.
+- **Shell**: \`${ghPullfrogMcpName}/bash\` (if available). Use this for local git operations (\`git add\`, \`git commit\`, \`git diff\`, \`git log\`, \`git status\`), running tests, builds, and linters.
+- **Read-only GitHub**: \`get_pull_request\`, \`get_issue\`, \`get_issue_comments\`, \`get_issue_events\`, \`get_review_comments\`, \`list_pull_request_reviews\`, \`get_check_suite_logs\`, \`get_commit_info\`.
+- **Output**: \`${ghPullfrogMcpName}/upload_file\`, \`${ghPullfrogMcpName}/set_output\`.
+
+## Output
+
+When you finish, you MUST call \`${ghPullfrogMcpName}/set_output\` with your results. This is how your work gets back to the orchestrator — if you don't call it, your output is lost. Structure output as the instructions request. For research tasks, use well-organized markdown.`;
+
+type BuildSubagentInstructionsParams = {
+  ctx: ToolContext;
+  label: string;
+  instructions: string;
+};
+
+function buildResolvedContext(params: BuildSubagentInstructionsParams): string {
+  let branch = "unknown";
+  try {
+    branch = execSync("git branch --show-current", { encoding: "utf-8", stdio: "pipe" }).trim();
+  } catch {
+    // git not available
+  }
+
+  const lines = [
+    `repo: ${params.ctx.repo.owner}/${params.ctx.repo.name}`,
+    `branch: ${branch}`,
+    `working_directory: ${process.cwd()}`,
+    `subagent_label: ${params.label}`,
+  ];
+
+  return `[CONTEXT]\n${lines.join("\n")}`;
+}
+
+export function buildSubagentInstructions(
+  params: BuildSubagentInstructionsParams
+): ResolvedInstructions {
+  const resolvedContext = buildResolvedContext(params);
+  const full = `${resolvedContext}\n\n${subagentSystemPreamble}\n\n---\n\n${params.instructions}`;
   return {
-    full: orchestratorPrompt,
-    system: "",
-    user: orchestratorPrompt,
+    full,
+    system: subagentSystemPreamble,
+    user: params.instructions,
     eventInstructions: "",
     repo: "",
     event: "",
@@ -74,14 +133,24 @@ type RunSubagentResult = {
 
 export async function runSubagent(params: RunSubagentParams): Promise<RunSubagentResult> {
   params.subagent.keepAliveInterval = setInterval(markActivity, 30_000);
-  const mcpServer = await startSubagentMcpServer(params.ctx);
+  const mcpServer = await startSubagentMcpServer({
+    ctx: params.ctx,
+    subagentId: params.subagent.id,
+  });
+  // each subagent gets its own tmpdir so parallel agents don't clobber config files
+  const subagentTmpdir = join(params.ctx.tmpdir, params.subagent.id);
+  mkdirSync(subagentTmpdir, { recursive: true });
   try {
     const subagentPayload = { ...params.ctx.payload, effort: params.effort };
-    const subagentInstructions = buildSubagentInstructions(params.instructions);
+    const subagentInstructions = buildSubagentInstructions({
+      ctx: params.ctx,
+      label: params.subagent.label,
+      instructions: params.instructions,
+    });
     const result = await params.ctx.agent.run({
       payload: subagentPayload,
       mcpServerUrl: mcpServer.url,
-      tmpdir: params.ctx.tmpdir,
+      tmpdir: subagentTmpdir,
       instructions: subagentInstructions,
     });
     params.subagent.usage = result.usage;

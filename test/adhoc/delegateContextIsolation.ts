@@ -47,7 +47,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   // some agents paraphrase or truncate, so matching the first 8 hex chars is sufficient.
   const secretPrefix = SECRET.slice(0, 8);
   const secretInOutput = setOutputCalled && output !== null && output.includes(secretPrefix);
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
 
   // the subagent's context report should NOT contain any part of the secret
   const subagentMatch = output ? /SUBAGENT_SAID=([\s\S]*)/i.exec(output) : null;

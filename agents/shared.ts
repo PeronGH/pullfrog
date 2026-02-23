@@ -42,6 +42,7 @@ export const agent = <const input extends AgentInput>(input: input): defineAgent
     ...input,
     run: async (ctx: AgentRunContext): Promise<AgentResult> => {
       log.info(`» agent:   ${input.name}`);
+      // matched by delegateEffort test validator — update tests if changed
       log.info(`» effort:  ${ctx.payload.effort}`);
       if (ctx.payload.timeout) log.info(`» timeout: ${ctx.payload.timeout}`);
       log.info(`» web:     ${ctx.payload.web}`);

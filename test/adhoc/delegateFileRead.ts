@@ -39,7 +39,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   const setOutputCalled = output !== null;
   const linesMatch = output ? /LINES=(\d+)/i.exec(output) : null;
   const hasLineCount = linesMatch !== null && parseInt(linesMatch[1], 10) > 0;
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
 
   return [
     { name: "set_output", passed: setOutputCalled },

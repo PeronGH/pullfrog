@@ -53,6 +53,17 @@ interface NpmRegistryData {
  * The temp directory will be cleaned up by the OS automatically
  */
 export async function installFromNpmTarball(params: InstallFromNpmTarballParams): Promise<string> {
+  const tempDir = process.env.PULLFROG_TEMP_DIR;
+  if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
+
+  const extractedDir = join(tempDir, "package");
+  const cliPath = join(extractedDir, params.executablePath);
+
+  if (existsSync(cliPath)) {
+    log.debug(`» using cached binary at ${cliPath}`);
+    return cliPath;
+  }
+
   // Resolve version if it's a range or "latest"
   let resolvedVersion = params.version;
   if (
@@ -79,9 +90,6 @@ export async function installFromNpmTarball(params: InstallFromNpmTarballParams)
   }
 
   log.debug(`» installing ${params.packageName}@${resolvedVersion}...`);
-
-  const tempDir = process.env.PULLFROG_TEMP_DIR;
-  if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
 
   const tarballPath = join(tempDir, "package.tgz");
 
@@ -120,10 +128,6 @@ export async function installFromNpmTarball(params: InstallFromNpmTarballParams)
       `Failed to extract tarball: ${extractResult.stderr || extractResult.stdout || "Unknown error"}`
     );
   }
-
-  // Find executable in the extracted package
-  const extractedDir = join(tempDir, "package");
-  const cliPath = join(extractedDir, params.executablePath);
 
   if (!existsSync(cliPath)) {
     throw new Error(`Executable not found in extracted package at ${cliPath}`);
@@ -189,6 +193,19 @@ async function fetchWithRetry(
  * The temp directory will be cleaned up by the OS automatically
  */
 export async function installFromGithub(params: InstallFromGithubParams): Promise<string> {
+  // use a deterministic subdir in PULLFROG_TEMP_DIR so repeated calls are cached
+  const pullfrogTemp = process.env.PULLFROG_TEMP_DIR;
+  const installDir = pullfrogTemp
+    ? join(pullfrogTemp, `github-${params.owner}-${params.repo}`)
+    : await mkdtemp(join(tmpdir(), `${params.owner}-${params.repo}-github-`));
+
+  const expectedCliPath = join(installDir, params.executablePath ?? params.assetName ?? "asset");
+
+  if (existsSync(expectedCliPath)) {
+    log.debug(`» using cached binary at ${expectedCliPath}`);
+    return expectedCliPath;
+  }
+
   log.info(`» installing ${params.owner}/${params.repo} from GitHub releases...`);
 
   // fetch release from GitHub API (pinned tag or latest)
@@ -222,14 +239,12 @@ export async function installFromGithub(params: InstallFromGithubParams): Promis
 
   log.debug(`» downloading asset from ${assetUrl}...`);
 
-  // create temp directory
-  const tempDirPrefix = `${params.owner}-${params.repo}-github-`;
-  const tempDirPath = await mkdtemp(join(tmpdir(), tempDirPrefix));
+  mkdirSync(installDir, { recursive: true });
 
   // determine file extension and download path
   const urlPath = new URL(assetUrl).pathname;
   const fileName = urlPath.split("/").pop() || "asset";
-  const downloadPath = join(tempDirPath, fileName);
+  const downloadPath = join(installDir, fileName);
 
   // download the asset
   const assetResponse = await fetchWithRetry(assetUrl, headers, "Failed to download asset");
@@ -240,13 +255,7 @@ export async function installFromGithub(params: InstallFromGithubParams): Promis
   log.debug(`» downloaded asset to ${downloadPath}`);
 
   // determine the executable path
-  let cliPath: string;
-  if (params.executablePath) {
-    cliPath = join(tempDirPath, params.executablePath);
-  } else {
-    // no executablePath, assume the downloaded file is the executable
-    cliPath = downloadPath;
-  }
+  const cliPath = params.executablePath ? join(installDir, params.executablePath) : downloadPath;
 
   if (!existsSync(cliPath)) {
     throw new Error(`Executable not found at ${cliPath}`);
@@ -266,6 +275,16 @@ export async function installFromGithub(params: InstallFromGithubParams): Promis
 export async function installFromGithubTarball(
   params: InstallFromGithubTarballParams
 ): Promise<string> {
+  const tempDir = process.env.PULLFROG_TEMP_DIR;
+  if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
+
+  const cliPath = join(tempDir, params.executablePath);
+
+  if (existsSync(cliPath)) {
+    log.debug(`» using cached binary at ${cliPath}`);
+    return cliPath;
+  }
+
   log.info(`» installing ${params.owner}/${params.repo} from GitHub releases...`);
 
   // determine platform-specific asset name
@@ -304,9 +323,6 @@ export async function installFromGithubTarball(
 
   log.debug(`» downloading asset from ${assetUrl}...`);
 
-  const tempDir = process.env.PULLFROG_TEMP_DIR;
-  if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
-
   const tarballPath = join(tempDir, assetName);
 
   // download the asset
@@ -329,9 +345,6 @@ export async function installFromGithubTarball(
     );
   }
 
-  // find executable in the extracted tarball
-  const cliPath = join(tempDir, params.executablePath);
-
   if (!existsSync(cliPath)) {
     throw new Error(`Executable not found in extracted tarball at ${cliPath}`);
   }
@@ -351,10 +364,18 @@ export async function installFromGithubTarball(
 export async function installFromDirectTarball(
   params: InstallFromDirectTarballParams
 ): Promise<string> {
-  log.info(`» downloading tarball from ${params.url}...`);
-
   const tempDir = process.env.PULLFROG_TEMP_DIR;
   if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
+
+  const extractDir = join(tempDir, "direct-package");
+  const cliPath = join(extractDir, params.executablePath);
+
+  if (existsSync(cliPath)) {
+    log.debug(`» using cached binary at ${cliPath}`);
+    return cliPath;
+  }
+
+  log.info(`» downloading tarball from ${params.url}...`);
 
   const tarballPath = join(tempDir, "direct-package.tgz");
 
@@ -365,8 +386,6 @@ export async function installFromDirectTarball(
   await pipeline(response.body, fileStream);
   log.debug(`» downloaded tarball to ${tarballPath}`);
 
-  // always extract into a dedicated directory
-  const extractDir = join(tempDir, "direct-package");
   mkdirSync(extractDir, { recursive: true });
 
   const tarArgs = ["-xzf", tarballPath, "-C", extractDir];
@@ -385,7 +404,6 @@ export async function installFromDirectTarball(
     );
   }
 
-  const cliPath = join(extractDir, params.executablePath);
   if (!existsSync(cliPath)) {
     throw new Error(`executable not found in extracted tarball at ${cliPath}`);
   }
@@ -402,10 +420,17 @@ export async function installFromDirectTarball(
  * The temp directory will be cleaned up by the OS automatically
  */
 export async function installFromCurl(params: InstallFromCurlParams): Promise<string> {
-  log.info(`» installing ${params.executableName}...`);
-
   const tempDir = process.env.PULLFROG_TEMP_DIR;
   if (!tempDir) throw new Error("PULLFROG_TEMP_DIR is not set");
+
+  const cliPath = join(tempDir, ".local", "bin", params.executableName);
+
+  if (existsSync(cliPath)) {
+    log.debug(`» using cached binary at ${cliPath}`);
+    return cliPath;
+  }
+
+  log.info(`» installing ${params.executableName}...`);
 
   const installScriptPath = join(tempDir, "install.sh");
 
@@ -447,10 +472,6 @@ export async function installFromCurl(params: InstallFromCurlParams): Promise<st
       `Failed to install ${params.executableName}. Install script exited with code ${installResult.status}. Output: ${errorOutput}`
     );
   }
-
-  // The Cursor install script creates a symlink at $HOME/.local/bin/{executableName}
-  // Since we set HOME=tempDir, the deterministic path is:
-  const cliPath = join(tempDir, ".local", "bin", params.executableName);
 
   if (!existsSync(cliPath)) {
     throw new Error(`Executable not found at ${cliPath}`);

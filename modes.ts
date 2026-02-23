@@ -29,8 +29,8 @@ export function computeModes(): Mode[] {
         "Implement, build, create, or develop code changes; make specific changes to files or features; execute a plan; or handle tasks with specific implementation details",
       prompt: `Follow these steps exactly.
 
-1. **BRANCH** - Determine whether to work on the current branch or create a new one:
-   - **PR event, modifying the existing PR**: The PR branch is probably already checked out. Continue on this branch.
+1. **CHECKOUT** - Determine whether to checkout the existing PR branch or create a new one:
+   - **PR event, modifying the existing PR**: Call \`${ghPullfrogMcpName}/checkout_pr\` with the PR number to checkout the PR branch.
    - **PR event, but user wants a NEW branch/PR**: Create a new branch with \`git checkout -b pullfrog/branch-name\` via the \`${ghPullfrogMcpName}/git\` tool.
    
    Branch names must be prefixed with "pullfrog/" and be specific enough to avoid collisions. Never commit directly to main/master/production.
@@ -214,7 +214,7 @@ ${permalinkTip}`,
 Your job is to fix issues THIS PR introduced, not to fix all CI failures. If in doubt about causation, abort and explain rather than making speculative changes.`,
     },
     {
-      name: "Prompt",
+      name: "Task",
       description:
         "General-purpose tasks that don't fit other modes: answering questions, adding comments, labeling, running ad-hoc commands, or any direct request",
       prompt: `Follow these steps. THINK HARDER.

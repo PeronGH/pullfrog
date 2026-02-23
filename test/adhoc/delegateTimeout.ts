@@ -37,7 +37,7 @@ function validator(result: AgentResult): ValidationCheck[] {
 
   const setOutputCalled = output !== null;
   const correctValue = setOutputCalled && /DELEGATE_TIMEOUT_PASSED/i.test(output);
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
   const noActivityTimeout = !/activity timeout/i.test(agentOutput);
 
   return [

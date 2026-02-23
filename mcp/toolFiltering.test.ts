@@ -4,41 +4,26 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { type } from "arktype";
 import { FastMCP } from "fastmcp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ORCHESTRATOR_ONLY_TOOLS } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 import { buildSubagentInstructions } from "./subagent.ts";
 
-// ─── unit tests for pure exported functions ─────────────────────────────
-
-describe("ORCHESTRATOR_ONLY_TOOLS", () => {
-  it("includes delegation tools", () => {
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("select_mode");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("delegate");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("ask_question");
-  });
-
-  it("includes remote-mutating tools", () => {
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("push_branch");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("push_tags");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("delete_branch");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("create_pull_request");
-    expect(ORCHESTRATOR_ONLY_TOOLS).toContain("update_pull_request_body");
-  });
-});
-
 describe("buildSubagentInstructions", () => {
-  it("returns clean-room instructions with only the orchestrator prompt", () => {
+  it("includes system preamble, resolved context, and orchestrator prompt", () => {
     const prompt = "Read file.ts and fix the type error.";
-    const instructions = buildSubagentInstructions(prompt);
-    expect(instructions).toEqual({
-      full: prompt,
-      system: "",
-      user: prompt,
-      eventInstructions: "",
-      repo: "",
-      event: "",
-      runtime: "",
+    const ctx = {
+      repo: { owner: "test-owner", name: "test-repo" },
+    } as any;
+    const instructions = buildSubagentInstructions({
+      ctx,
+      label: "test-task",
+      instructions: prompt,
     });
+    expect(instructions.user).toBe(prompt);
+    expect(instructions.full).toContain("[CONTEXT]");
+    expect(instructions.full).toContain("test-owner/test-repo");
+    expect(instructions.full).toContain("subagent_label: test-task");
+    expect(instructions.full).toContain("set_output");
+    expect(instructions.full).toContain(prompt);
   });
 });
 
@@ -97,10 +82,9 @@ describe("per-server tool isolation - integration", () => {
     orchestratorServer.addTool(mockTool("push_branch", "push branch"));
     orchestratorServer.addTool(mockTool("create_pull_request", "create PR"));
 
-    // subagent gets ONLY common tools (no delegation, no remote mutation)
+    // subagent gets ONLY file ops, bash, read-only GitHub, upload, set_output
     subagentServer = new FastMCP({ name: "subagent", version: "0.0.1" });
     subagentServer.addTool(mockTool("file_read", "read a file"));
-    subagentServer.addTool(mockTool("git", "run git commands"));
     subagentServer.addTool(mockTool("set_output", "set output"));
 
     await Promise.all([
@@ -142,7 +126,7 @@ describe("per-server tool isolation - integration", () => {
     expect(names.length).toBe(8);
   });
 
-  it("subagent cannot see delegation or mutation tools", async () => {
+  it("subagent cannot see orchestrator-only tools", async () => {
     const client = await connectMcpClient(subagentUrl);
     clients.push(client);
     const result = await client.listTools();
@@ -152,16 +136,16 @@ describe("per-server tool isolation - integration", () => {
     expect(names).not.toContain("ask_question");
     expect(names).not.toContain("push_branch");
     expect(names).not.toContain("create_pull_request");
+    expect(names).not.toContain("git");
   });
 
-  it("subagent sees only common tools", async () => {
+  it("subagent sees only file ops, read-only tools, and set_output", async () => {
     const client = await connectMcpClient(subagentUrl);
     clients.push(client);
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("file_read");
-    expect(names).toContain("git");
     expect(names).toContain("set_output");
-    expect(names.length).toBe(3);
+    expect(names.length).toBe(2);
   });
 });

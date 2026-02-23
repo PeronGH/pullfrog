@@ -21,7 +21,13 @@ import { setupTestRepo } from "./utils/setup.ts";
  */
 export const playFixture = defineFixture(
   {
-    prompt: `What is 2 + 2? Reply with just the number.`,
+    prompt: `Select Plan mode, then delegate a single task:
+
+tasks: [
+  { label: "tool-audit", instructions: "List every MCP tool you have access to. Call set_output with a JSON array of all tool names you can see.", effort: "mini" }
+]
+
+After it completes, call set_output with the subagent's result verbatim.`,
     effort: "mini",
   },
   { localOnly: true }

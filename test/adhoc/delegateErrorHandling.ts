@@ -39,7 +39,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   const setOutputCalled = output !== null;
   const errorHandled = setOutputCalled && /ERROR_HANDLED=true/i.test(output ?? "");
   const hasReason = setOutputCalled && /REASON=\S+/i.test(output ?? "");
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
 
   return [
     { name: "set_output", passed: setOutputCalled },

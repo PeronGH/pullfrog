@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { type } from "arktype";
 import type { ShellPermission } from "../external.ts";
 import type { ToolContext } from "./server.ts";
@@ -57,6 +57,15 @@ function resolveReadPath(filePath: string): string {
   const tempDir = process.env.PULLFROG_TEMP_DIR;
   if (tempDir && (resolved === tempDir || resolved.startsWith(tempDir + "/"))) {
     return resolved;
+  }
+
+  // allow reads from Cursor's project directory (internal agent coordination files)
+  const home = process.env.HOME;
+  if (home) {
+    const cursorProjectsDir = join(home, ".cursor", "projects");
+    if (resolved.startsWith(cursorProjectsDir + "/")) {
+      return resolved;
+    }
   }
 
   // allow reads from the repo with symlink protection.

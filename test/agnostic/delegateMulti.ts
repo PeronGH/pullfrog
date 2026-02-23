@@ -4,8 +4,8 @@ import { defineFixture, getAgentOutput, getStructuredOutput } from "../utils.ts"
 /**
  * delegateMulti test - validates multi-phase delegation with context passing.
  *
- * the orchestrator delegates twice:
- * 1. first to Plan mode (subagent calls set_output with PHASE_1_MARKER)
+ * the orchestrator delegates twice using the tasks array API:
+ * 1. first to Plan mode with a single-task array (subagent calls set_output with PHASE_1_MARKER)
  * 2. then to Plan mode again with context from phase 1 (subagent calls set_output with MULTI_DELEGATE_PASSED)
  *
  * validates that both delegations executed and the final set_output value is correct.
@@ -13,13 +13,11 @@ import { defineFixture, getAgentOutput, getStructuredOutput } from "../utils.ts"
 
 const fixture = defineFixture(
   {
-    prompt: `This is a multi-delegation test. You must delegate exactly twice:
+    prompt: `This is a multi-delegation test. You must delegate exactly twice using the tasks array format.
 
-Phase 1: Select Plan mode via select_mode, then delegate with mini effort. Your subagent instructions:
-"Your task is to call set_output with the value 'PHASE_1_MARKER'. Do not create plans or PRs."
+Phase 1: Select Plan mode via select_mode, then delegate with tasks: [{ label: "phase-1", instructions: "Your task is to call set_output with the value 'PHASE_1_MARKER'. Do not create plans or PRs.", effort: "mini" }]
 
-Phase 2: After Phase 1 completes, select Plan mode again and delegate with mini effort. Include the result from Phase 1. Your subagent instructions:
-"Your task is to call set_output with the value 'MULTI_DELEGATE_PASSED'. Do not create plans or PRs."
+Phase 2: After Phase 1 completes, select Plan mode again and delegate with tasks: [{ label: "phase-2", instructions: "Your task is to call set_output with the value 'MULTI_DELEGATE_PASSED'. Do not create plans or PRs.", effort: "mini" }]. Include the result from Phase 1 in the instructions if you want.
 
 Both delegations must complete successfully.`,
     effort: "mini",
@@ -36,7 +34,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   // the last set_output call wins — should be from Phase 2
   const finalValue = setOutputCalled && /MULTI_DELEGATE_PASSED/i.test(output);
 
-  const delegationMatches = agentOutput.match(/» delegating subagent=/g);
+  const delegationMatches = agentOutput.match(/» delegating \d+ task/g);
   const twoDelegations = delegationMatches !== null && delegationMatches.length >= 2;
 
   return [

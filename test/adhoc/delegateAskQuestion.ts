@@ -41,8 +41,8 @@ function validator(result: AgentResult): ValidationCheck[] {
   const hasFilesFound = setOutputCalled && /FILES_FOUND=true/i.test(output ?? "");
   const countMatch = output ? /COUNT=(\d+)/i.exec(output) : null;
   const hasFileCount = countMatch !== null && parseInt(countMatch[1], 10) > 0;
-  const askQuestionUsed = /» ask_question subagent=/i.test(agentOutput);
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const askQuestionUsed = /» ask_question "/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
 
   return [
     { name: "set_output", passed: setOutputCalled },

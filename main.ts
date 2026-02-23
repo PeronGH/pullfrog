@@ -128,7 +128,6 @@ export async function main(): Promise<MainResult> {
       gitToken: tokenRef.gitToken,
       owner: runContext.repo.owner,
       name: runContext.repo.name,
-      event: payload.event,
       octokit,
       toolState,
       shell: payload.shell,

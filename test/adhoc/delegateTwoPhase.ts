@@ -51,7 +51,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   const setOutputCalled = output !== null;
 
   // two delegation calls should appear in logs
-  const delegationMatches = agentOutput.match(/» delegating subagent=/g);
+  const delegationMatches = agentOutput.match(/» delegating \d+ task/g);
   const twoDelegations = delegationMatches !== null && delegationMatches.length >= 2;
 
   // the marker should appear in both WRITTEN= and READ= sections.

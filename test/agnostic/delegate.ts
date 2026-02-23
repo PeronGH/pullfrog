@@ -25,7 +25,7 @@ function validator(result: AgentResult): ValidationCheck[] {
 
   const setOutputCalled = output !== null;
   const correctValue = setOutputCalled && /DELEGATE_BASIC_PASSED/i.test(output);
-  const delegationOccurred = /» delegating subagent=/i.test(agentOutput);
+  const delegationOccurred = /» delegating \d+ task/i.test(agentOutput);
 
   return [
     { name: "set_output", passed: setOutputCalled },

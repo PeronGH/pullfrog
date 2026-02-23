@@ -25,6 +25,7 @@ export type SubagentStatus = "running" | "completed" | "failed";
 
 export type SubagentState = {
   id: string;
+  label: string;
   status: SubagentStatus;
   mode: string;
   stdoutFilePath: string;
@@ -46,8 +47,9 @@ export interface ToolState {
   selectedMode?: string;
   // per-subagent lifecycle tracking (keyed by subagent uuid)
   subagents: Map<string, SubagentState>;
-  // set while a subagent is running — routes set_output to the correct subagent and prevents nesting
-  activeSubagentId: string | undefined;
+  // only set on subagent shallow copies — routes set_output to the owning subagent.
+  // never set on the orchestrator's shared state.
+  selfSubagentId: string | undefined;
   backgroundProcesses: Map<string, BackgroundProcess>;
   review?: {
     id: number;
@@ -81,7 +83,7 @@ export function initToolState(params: InitToolStateParams): ToolState {
   return {
     progressCommentId: resolvedId,
     subagents: new Map(),
-    activeSubagentId: undefined,
+    selfSubagentId: undefined,
     backgroundProcesses: new Map(),
     usageEntries: [],
   };
@@ -104,24 +106,6 @@ export interface ToolContext {
   mcpServerUrl: string;
   tmpdir: string;
 }
-
-/**
- * tool names that are only available to the orchestrator.
- * subagent MCP servers are started with these tools excluded.
- *
- * - delegation tools: only the orchestrator can spawn/manage subagents
- * - remote-mutating tools: subagents work locally; the orchestrator pushes and creates PRs
- */
-export const ORCHESTRATOR_ONLY_TOOLS = [
-  "select_mode",
-  "delegate",
-  "ask_question",
-  "push_branch",
-  "push_tags",
-  "delete_branch",
-  "create_pull_request",
-  "update_pull_request_body",
-] as const;
 
 import { log } from "../utils/cli.ts";
 import type { RunContextData } from "../utils/runContextData.ts";
@@ -204,27 +188,50 @@ function isAddressInUse(error: unknown): boolean {
   return message.includes("eaddrinuse") || message.includes("address already in use");
 }
 
-// tools shared by both orchestrator and subagent servers
-function buildCommonTools(ctx: ToolContext): Tool<any, any>[] {
+// subagent tools: file ops, bash, read-only GitHub, upload, set_output.
+// no git/checkout (mutates shared state), no dependencies (shared state),
+// no GitHub-write (user-facing side effects), no delegation/remote-mutating.
+function buildSubagentTools(ctx: ToolContext): Tool<any, any>[] {
   const tools: Tool<any, any>[] = [
-    StartDependencyInstallationTool(ctx),
-    AwaitDependencyInstallationTool(ctx),
-    CreateCommentTool(ctx),
-    EditCommentTool(ctx),
-    ReplyToReviewCommentTool(ctx),
-    IssueTool(ctx),
     IssueInfoTool(ctx),
     GetIssueCommentsTool(ctx),
     GetIssueEventsTool(ctx),
-    CreatePullRequestReviewTool(ctx),
+    PullRequestInfoTool(ctx),
+    CommitInfoTool(ctx),
+    GetReviewCommentsTool(ctx),
+    ListPullRequestReviewsTool(ctx),
+    GetCheckSuiteLogsTool(ctx),
+    UploadFileTool(ctx),
+    SetOutputTool(ctx),
+    FileReadTool(ctx),
+    FileWriteTool(ctx),
+    FileEditTool(ctx),
+    FileDeleteTool(ctx),
+    ListDirectoryTool(ctx),
+  ];
+
+  if (ctx.payload.bash === "restricted") {
+    tools.push(BashTool(ctx));
+    tools.push(KillBackgroundTool(ctx));
+  }
+
+  return tools;
+}
+
+// orchestrator gets everything: file ops, bash, git, GitHub, delegation, remote-mutating
+function buildOrchestratorTools(ctx: ToolContext): Tool<any, any>[] {
+  const tools: Tool<any, any>[] = [
+    StartDependencyInstallationTool(ctx),
+    AwaitDependencyInstallationTool(ctx),
+    IssueInfoTool(ctx),
+    GetIssueCommentsTool(ctx),
+    GetIssueEventsTool(ctx),
     PullRequestInfoTool(ctx),
     CommitInfoTool(ctx),
     CheckoutPrTool(ctx),
     GetReviewCommentsTool(ctx),
     ListPullRequestReviewsTool(ctx),
-    ResolveReviewThreadTool(ctx),
     GetCheckSuiteLogsTool(ctx),
-    AddLabelsTool(ctx),
     GitTool(ctx),
     GitFetchTool(ctx),
     UploadFileTool(ctx),
@@ -234,7 +241,22 @@ function buildCommonTools(ctx: ToolContext): Tool<any, any>[] {
     FileEditTool(ctx),
     FileDeleteTool(ctx),
     ListDirectoryTool(ctx),
+    CreateCommentTool(ctx),
+    EditCommentTool(ctx),
+    ReplyToReviewCommentTool(ctx),
+    CreatePullRequestReviewTool(ctx),
+    ResolveReviewThreadTool(ctx),
+    IssueTool(ctx),
+    AddLabelsTool(ctx),
     ReportProgressTool(ctx),
+    SelectModeTool(ctx),
+    DelegateTool(ctx),
+    AskQuestionTool(ctx),
+    PushBranchTool(ctx),
+    PushTagsTool(ctx),
+    DeleteBranchTool(ctx),
+    CreatePullRequestTool(ctx),
+    UpdatePullRequestBodyTool(ctx),
   ];
 
   // only add ShellTool when shell is "restricted"
@@ -247,26 +269,6 @@ function buildCommonTools(ctx: ToolContext): Tool<any, any>[] {
   }
 
   return tools;
-}
-
-// orchestrator gets common tools + delegation + remote-mutating tools
-function buildOrchestratorTools(ctx: ToolContext): Tool<any, any>[] {
-  return [
-    ...buildCommonTools(ctx),
-    SelectModeTool(ctx),
-    DelegateTool(ctx),
-    AskQuestionTool(ctx),
-    PushBranchTool(ctx),
-    PushTagsTool(ctx),
-    DeleteBranchTool(ctx),
-    CreatePullRequestTool(ctx),
-    UpdatePullRequestBodyTool(ctx),
-  ];
-}
-
-// subagent gets only common tools (no delegation, no remote mutation)
-function buildSubagentTools(ctx: ToolContext): Tool<any, any>[] {
-  return buildCommonTools(ctx);
 }
 
 type McpStartResult = {
@@ -391,21 +393,30 @@ export type ManagedMcpServer = {
   stop: () => Promise<void>;
 };
 
+type StartSubagentMcpServerParams = {
+  ctx: ToolContext;
+  subagentId: string;
+};
+
 /**
  * Start a per-subagent MCP server (common tools only — no push/PR/delegation).
  * Each subagent gets its own server; call stop() when the subagent completes.
  *
  * The subagent gets its own shallow copy of toolState so scalar writes
  * (pushUrl, pushDest, selectedMode, etc.) don't mutate the orchestrator's state.
+ * selfSubagentId is set on the copy so set_output routes to the correct subagent.
  * Shared references (subagents Map, usageEntries array, dependencyInstallation)
  * are intentionally shared for coordination (set_output routing, usage tracking).
  */
-export async function startSubagentMcpServer(ctx: ToolContext): Promise<ManagedMcpServer> {
+export async function startSubagentMcpServer(
+  params: StartSubagentMcpServerParams
+): Promise<ManagedMcpServer> {
   const subagentToolState: ToolState = {
-    ...ctx.toolState,
+    ...params.ctx.toolState,
+    selfSubagentId: params.subagentId,
     backgroundProcesses: new Map(),
   };
-  const subagentCtx: ToolContext = { ...ctx, toolState: subagentToolState };
+  const subagentCtx: ToolContext = { ...params.ctx, toolState: subagentToolState };
   const tools = buildSubagentTools(subagentCtx);
   const startResult = await selectMcpPort(subagentCtx, tools);
   return { url: startResult.url, stop: () => startResult.server.stop() };

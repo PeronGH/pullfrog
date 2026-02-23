@@ -120,21 +120,13 @@ ${mcpServerSections.join("\n\n")}
   return codexDir;
 }
 
-// cache the installed CLI path so subagents don't re-download
-let cachedCliPath: string | null = null;
-
 async function installCodex(): Promise<string> {
-  if (cachedCliPath) return cachedCliPath;
-
-  const cliPath = await installFromNpmTarball({
+  return await installFromNpmTarball({
     packageName: "@openai/codex",
     version: CODEX_CLI_VERSION,
     executablePath: "bin/codex.js",
     installDependencies: true,
   });
-
-  cachedCliPath = cliPath;
-  return cliPath;
 }
 
 export const codex = agent({

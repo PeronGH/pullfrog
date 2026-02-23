@@ -46,7 +46,7 @@ function validator(result: AgentResult): ValidationCheck[] {
   const setOutputCalled = output !== null;
 
   // should have two delegation calls
-  const delegationMatches = agentOutput.match(/» delegating subagent=/g);
+  const delegationMatches = agentOutput.match(/» delegating \d+ task/g);
   const twoDelegations = delegationMatches !== null && delegationMatches.length >= 2;
 
   // FIRST_LINE should be a non-empty string (the first line of README.md)
