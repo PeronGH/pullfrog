@@ -120,6 +120,8 @@ const testEnvAllowList = new Set([
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "CURSOR_API_KEY",
   "OPENCODE_MODEL", // override OpenCode model (e.g. google/gemini-3-flash-preview) for tests or user preference
+  "OPENCODE_MODEL_MINI", // effort-specific OpenCode model override for mini effort
+  "OPENCODE_MODEL_MAX", // effort-specific OpenCode model override for max effort
   "GEMINI_MODEL", // override Gemini model (e.g. gemini-3-pro-preview) for tests or user preference
   "LOG_LEVEL",
   "DEBUG",

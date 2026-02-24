@@ -1,7 +1,7 @@
 // changes to effort level configuration should be reflected in wiki/effort.md and docs/effort.mdx
 // changes to tool permissions should be reflected in wiki/granular-tools.md
 // changes to web search configuration should be reflected in wiki/websearch.md
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { ghPullfrogMcpName } from "../external.ts";
@@ -38,6 +38,159 @@ function detectProviderError(text: string): string | null {
   return null;
 }
 
+type OpenCodeConfig = {
+  mcp?: Record<string, unknown>;
+  permission?: Record<string, unknown>;
+  provider?: Record<string, unknown>;
+  model?: string;
+  enabled_providers?: string[];
+  [key: string]: unknown;
+};
+
+type RecordPropertyContext = {
+  value: unknown;
+  key: string;
+};
+
+type RepoConfigLoadContext = {
+  repoConfigPath: string;
+};
+
+type ProviderFromModelContext = {
+  model: string;
+};
+
+type InlineConfigOverrideContext = {
+  model: string;
+};
+
+type InlineConfigOverride = {
+  providerId: string;
+  content: string;
+};
+
+type ModelOverrideResolutionContext = {
+  effort: AgentRunContext["payload"]["effort"];
+  env: NodeJS.ProcessEnv;
+};
+
+type ModelOverrideResolution = {
+  model: string;
+  source: "OPENCODE_MODEL_MINI" | "OPENCODE_MODEL_MAX" | "OPENCODE_MODEL";
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getRecordProperty(ctx: RecordPropertyContext): Record<string, unknown> | undefined {
+  if (!isRecord(ctx.value)) {
+    return undefined;
+  }
+  const propertyValue = ctx.value[ctx.key];
+  if (!isRecord(propertyValue)) {
+    return undefined;
+  }
+  return propertyValue;
+}
+
+function loadRepoOpenCodeConfig(ctx: RepoConfigLoadContext): OpenCodeConfig | undefined {
+  if (!existsSync(ctx.repoConfigPath)) {
+    log.info(`» repo opencode.json not found at ${ctx.repoConfigPath}`);
+    return undefined;
+  }
+
+  try {
+    const rawConfig = readFileSync(ctx.repoConfigPath, "utf-8");
+    const parsedConfig = JSON.parse(rawConfig);
+    if (!isRecord(parsedConfig)) {
+      log.warning(`» repo opencode.json is not an object: ${ctx.repoConfigPath}`);
+      return undefined;
+    }
+
+    const providerConfig = getRecordProperty({ value: parsedConfig, key: "provider" });
+    if (providerConfig) {
+      const providerNames = Object.keys(providerConfig);
+      log.info(`» repo opencode provider config detected: ${providerNames.join(", ")}`);
+    }
+
+    const result: OpenCodeConfig = parsedConfig;
+    log.info(`» loaded repo opencode.json from ${ctx.repoConfigPath}`);
+    return result;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.warning(`» failed to parse repo opencode.json at ${ctx.repoConfigPath}: ${errorMessage}`);
+    return undefined;
+  }
+}
+
+function parseProviderFromModel(ctx: ProviderFromModelContext): string | undefined {
+  const trimmedModel = ctx.model.trim();
+  const slashIndex = trimmedModel.indexOf("/");
+  if (slashIndex <= 0) {
+    return undefined;
+  }
+  const providerId = trimmedModel.slice(0, slashIndex).trim().toLowerCase();
+  if (!providerId) {
+    return undefined;
+  }
+  return providerId;
+}
+
+function buildInlineConfigOverride(
+  ctx: InlineConfigOverrideContext
+): InlineConfigOverride | undefined {
+  const providerId = parseProviderFromModel({ model: ctx.model });
+  if (!providerId) {
+    return undefined;
+  }
+  const inlineConfig: OpenCodeConfig = {
+    model: ctx.model,
+    enabled_providers: [providerId],
+  };
+  return {
+    providerId,
+    content: JSON.stringify(inlineConfig),
+  };
+}
+
+function readNonEmptyEnvVar(ctx: { env: NodeJS.ProcessEnv; name: string }): string | undefined {
+  const value = ctx.env[ctx.name];
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function resolveModelOverride(
+  ctx: ModelOverrideResolutionContext
+): ModelOverrideResolution | undefined {
+  if (ctx.effort === "mini") {
+    const miniModel = readNonEmptyEnvVar({ env: ctx.env, name: "OPENCODE_MODEL_MINI" });
+    if (miniModel) {
+      return { model: miniModel, source: "OPENCODE_MODEL_MINI" };
+    }
+  }
+
+  if (ctx.effort === "max") {
+    const maxModel = readNonEmptyEnvVar({ env: ctx.env, name: "OPENCODE_MODEL_MAX" });
+    if (maxModel) {
+      return { model: maxModel, source: "OPENCODE_MODEL_MAX" };
+    }
+  }
+
+  const baseModel = readNonEmptyEnvVar({ env: ctx.env, name: "OPENCODE_MODEL" });
+  if (!baseModel) {
+    return undefined;
+  }
+
+  return { model: baseModel, source: "OPENCODE_MODEL" };
+}
+
 async function installOpencode(): Promise<string> {
   return await installFromNpmTarball({
     packageName: "opencode-ai",
@@ -66,13 +219,18 @@ export const opencode = agent({
     // this is critical for debugging since opencode run suppresses errors by default (Issue #752).
     const args = ["run", ctx.instructions.full, "--format", "json", "--print-logs"];
 
-    // only override model when OPENCODE_MODEL is set (e.g., test environments with
-    // restricted API quotas). in production, OpenCode auto-selects the best available
-    // model based on which provider API keys are present.
-    const modelOverride = process.env.OPENCODE_MODEL;
+    // resolve model override from environment.
+    // precedence:
+    // 1) effort-specific overrides (OPENCODE_MODEL_MINI / OPENCODE_MODEL_MAX)
+    // 2) OPENCODE_MODEL fallback
+    // 3) OpenCode auto-select
+    const modelOverride = resolveModelOverride({
+      effort: ctx.payload.effort,
+      env: process.env,
+    });
     if (modelOverride) {
-      args.push("--model", modelOverride);
-      log.info(`» model: ${modelOverride} (override)`);
+      args.push("--model", modelOverride.model);
+      log.info(`» model: ${modelOverride.model} (override via ${modelOverride.source})`);
     } else {
       log.info(`» model: auto-selected by OpenCode`);
     }
@@ -89,6 +247,31 @@ export const opencode = agent({
       GOOGLE_GENERATIVE_AI_API_KEY:
         process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY,
     };
+
+    if (modelOverride) {
+      const inlineOverride = buildInlineConfigOverride({ model: modelOverride.model });
+      if (inlineOverride) {
+        env.OPENCODE_CONFIG_CONTENT = inlineOverride.content;
+        log.info(
+          `» OpenCode inline config override enabled: provider=${inlineOverride.providerId}, model=${modelOverride.model}`
+        );
+      } else {
+        log.warning(
+          `» skipping OpenCode inline config override: unable to parse provider from model "${modelOverride.model}"`
+        );
+      }
+    }
+
+    const hasOpenRouterKey = Boolean(env.OPENROUTER_API_KEY);
+    const hasAnthropicKey = Boolean(env.ANTHROPIC_API_KEY);
+    const hasOpenAiKey = Boolean(env.OPENAI_API_KEY);
+    const hasGoogleKey = Boolean(
+      env.GOOGLE_API_KEY || env.GEMINI_API_KEY || env.GOOGLE_GENERATIVE_AI_API_KEY
+    );
+    log.info(
+      `» provider key presence: OPENROUTER=${hasOpenRouterKey ? "set" : "unset"}, ANTHROPIC=${hasAnthropicKey ? "set" : "unset"}, OPENAI=${hasOpenAiKey ? "set" : "unset"}, GOOGLE=${hasGoogleKey ? "set" : "unset"}`
+    );
+
     // OpenCode doesn't support GitHub App installation tokens
     delete env.GITHUB_TOKEN;
 
@@ -194,7 +377,7 @@ export const opencode = agent({
             lastProviderError = providerError;
             log.info(`» provider error detected (${providerError}): ${trimmed.substring(0, 500)}`);
           } else {
-            // OpenCode's --print-logs output goes to stderr. demote internal
+            //agent OpenCode's --print-logs output goes to stderr. demote internal
             // INFO/DEBUG bus traffic to debug so it doesn't drown out tool
             // call logs in the GitHub Actions step output.
             log.debug(trimmed);
@@ -301,28 +484,41 @@ function configureOpenCode(ctx: AgentRunContext): void {
   const configDir = join(ctx.tmpdir, ".config", "opencode");
   mkdirSync(configDir, { recursive: true });
   const configPath = join(configDir, "opencode.json");
+  const repoConfigPath = join(process.cwd(), "opencode.json");
+  const repoConfig = loadRepoOpenCodeConfig({ repoConfigPath });
+  if (repoConfig?.model) {
+    log.info(`» repo opencode model configured: ${repoConfig.model}`);
+  }
 
   // build MCP servers config
-  const opencodeMcpServers = {
-    [ghPullfrogMcpName]: { type: "remote" as const, url: ctx.mcpServerUrl },
-  };
+  const opencodeMcpServers: Record<string, unknown> = {};
+  const repoMcpServers = getRecordProperty({ value: repoConfig, key: "mcp" });
+  if (repoMcpServers) {
+    Object.assign(opencodeMcpServers, repoMcpServers);
+  }
+  opencodeMcpServers[ghPullfrogMcpName] = { type: "remote" as const, url: ctx.mcpServerUrl };
 
   // build permission object based on tool permissions
   // note: OpenCode has no built-in web search tool
   const shell = ctx.payload.shell;
-  const permission = {
-    edit: "deny",
-    read: "deny",
-    bash: shell !== "enabled" ? "deny" : "allow",
-    webfetch: ctx.payload.web === "disabled" ? "deny" : "allow",
-    external_directory: "deny",
-  };
+  const permission: Record<string, unknown> = {};
+  const repoPermission = getRecordProperty({ value: repoConfig, key: "permission" });
+  if (repoPermission) {
+    Object.assign(permission, repoPermission);
+  }
+  permission.edit = "deny";
+  permission.read = "deny";
+  permission.bash = shell !== "enabled" ? "deny" : "allow";
+  permission.webfetch = ctx.payload.web === "disabled" ? "deny" : "allow";
+  permission.external_directory = "deny";
 
   // build complete config in one object
-  const config = {
-    mcp: opencodeMcpServers,
-    permission,
-  };
+  const config: OpenCodeConfig = {};
+  if (repoConfig) {
+    Object.assign(config, repoConfig);
+  }
+  config.mcp = opencodeMcpServers;
+  config.permission = permission;
 
   const configJson = JSON.stringify(config, null, 2);
   try {

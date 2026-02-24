@@ -39,6 +39,8 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
       OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+      OPENCODE_MODEL_MINI: ${{ vars.OPENCODE_MODEL_MINI }}
+      OPENCODE_MODEL_MAX: ${{ vars.OPENCODE_MODEL_MAX }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

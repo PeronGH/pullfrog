@@ -65,6 +65,8 @@ const expectedAgentEnvVars = [
   "GITHUB_TOKEN",
   ...new Set(Object.values(agentsManifest).flatMap((a) => a.apiKeyNames)),
   "GEMINI_MODEL",
+  "OPENCODE_MODEL_MAX",
+  "OPENCODE_MODEL_MINI",
   "OPENCODE_MODEL",
 ].sort();
 
