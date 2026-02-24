@@ -82,27 +82,27 @@ function detectSandboxMethod(): SandboxMethod {
   return "none";
 }
 
+// strip inherited proc mount that sits underneath --mount-proc's overlay.
+// --mount-proc mounts fresh proc on top, but `umount /proc` peels it off and exposes the
+// host's proc with all host PIDs — allowing /proc/<pid>/environ exfiltration.
+// double-umount removes both layers, then a clean mount gives only sandbox PIDs.
+// on unprivileged systems where umount fails, --mount-proc still provides isolation
+// (the agent also can't umount in that case).
+const PROC_CLEANUP = "umount /proc 2>/dev/null; umount /proc 2>/dev/null; mount -t proc proc /proc 2>/dev/null;";
+
 function spawnShell(params: SpawnParams): ChildProcess {
   const spawnOpts = { env: params.env, cwd: params.cwd, stdio: params.stdio, detached: true };
   const sandboxMethod = detectSandboxMethod();
 
   if (sandboxMethod === "unshare") {
-    // use PID namespace isolation to prevent reading /proc/$PPID/environ
-    // this creates a new PID namespace where:
-    // 1. the subprocess becomes PID 1 in its namespace
-    // 2. parent PIDs are not visible (PPID = 0)
-    // 3. fresh /proc is mounted showing only sandbox PIDs
-    // combined with resolveEnv("restricted"), this prevents all /proc-based secret theft
     return spawn(
       "unshare",
-      ["--pid", "--fork", "--mount-proc", "bash", "-c", params.command],
+      ["--pid", "--fork", "--mount-proc", "bash", "-c", `${PROC_CLEANUP} ${params.command}`],
       spawnOpts
     );
   }
 
   if (sandboxMethod === "sudo-unshare") {
-    // on GHA runners, unprivileged namespaces are blocked but sudo works
-    // pass filtered env via sudo env command since sudo clears environment
     const envArgs: string[] = [];
     for (const [k, v] of Object.entries(params.env)) {
       if (v !== undefined) {
@@ -120,9 +120,9 @@ function spawnShell(params: SpawnParams): ChildProcess {
         "--mount-proc",
         "bash",
         "-c",
-        params.command,
+        `${PROC_CLEANUP} ${params.command}`,
       ],
-      { ...spawnOpts, env: {} } // empty env since we pass via sudo env
+      { ...spawnOpts, env: {} }
     );
   }
 
