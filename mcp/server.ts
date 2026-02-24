@@ -25,6 +25,7 @@ export type SubagentStatus = "running" | "completed" | "failed";
 
 export type SubagentState = {
   id: string;
+  label: string;
   status: SubagentStatus;
   mode: string;
   stdoutFilePath: string;
@@ -46,8 +47,9 @@ export interface ToolState {
   selectedMode?: string;
   // per-subagent lifecycle tracking (keyed by subagent uuid)
   subagents: Map<string, SubagentState>;
-  // set while a subagent is running — routes set_output to the correct subagent and prevents nesting
-  activeSubagentId: string | undefined;
+  // only set on subagent shallow copies — routes set_output to the owning subagent.
+  // never set on the orchestrator's shared state.
+  selfSubagentId: string | undefined;
   backgroundProcesses: Map<string, BackgroundProcess>;
   review?: {
     id: number;
@@ -81,7 +83,7 @@ export function initToolState(params: InitToolStateParams): ToolState {
   return {
     progressCommentId: resolvedId,
     subagents: new Map(),
-    activeSubagentId: undefined,
+    selfSubagentId: undefined,
     backgroundProcesses: new Map(),
     usageEntries: [],
   };
@@ -391,21 +393,30 @@ export type ManagedMcpServer = {
   stop: () => Promise<void>;
 };
 
+type StartSubagentMcpServerParams = {
+  ctx: ToolContext;
+  subagentId: string;
+};
+
 /**
  * Start a per-subagent MCP server (common tools only — no push/PR/delegation).
  * Each subagent gets its own server; call stop() when the subagent completes.
  *
  * The subagent gets its own shallow copy of toolState so scalar writes
  * (pushUrl, pushDest, selectedMode, etc.) don't mutate the orchestrator's state.
+ * selfSubagentId is set on the copy so set_output routes to the correct subagent.
  * Shared references (subagents Map, usageEntries array, dependencyInstallation)
  * are intentionally shared for coordination (set_output routing, usage tracking).
  */
-export async function startSubagentMcpServer(ctx: ToolContext): Promise<ManagedMcpServer> {
+export async function startSubagentMcpServer(
+  params: StartSubagentMcpServerParams
+): Promise<ManagedMcpServer> {
   const subagentToolState: ToolState = {
-    ...ctx.toolState,
+    ...params.ctx.toolState,
+    selfSubagentId: params.subagentId,
     backgroundProcesses: new Map(),
   };
-  const subagentCtx: ToolContext = { ...ctx, toolState: subagentToolState };
+  const subagentCtx: ToolContext = { ...params.ctx, toolState: subagentToolState };
   const tools = buildSubagentTools(subagentCtx);
   const startResult = await selectMcpPort(subagentCtx, tools);
   return { url: startResult.url, stop: () => startResult.server.stop() };

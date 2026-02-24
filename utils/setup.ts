@@ -2,8 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PayloadEvent, ShellPermission } from "../external.ts";
-import { checkoutPrBranch } from "../mcp/checkout.ts";
+import type { ShellPermission } from "../external.ts";
 import type { ToolState } from "../mcp/server.ts";
 import { log } from "./cli.ts";
 import type { OctokitWithPlugins } from "./github.ts";
@@ -59,9 +58,7 @@ export interface GitContext {
   postCheckoutScript: string | null;
 }
 
-export interface SetupGitParams extends GitContext {
-  event: PayloadEvent;
-}
+export type SetupGitParams = GitContext;
 
 /**
  * setup git configuration and authentication for the repository.
@@ -170,16 +167,5 @@ export async function setupGit(params: SetupGitParams): Promise<void> {
   // disable credential helpers to prevent prompts and ensure clean auth state
   $("git", ["config", "--local", "credential.helper", ""], { cwd: repoDir });
 
-  // non-PR events: stay on default branch
-  if (params.event.is_pr !== true || !params.event.issue_number) {
-    log.info("» git authentication configured");
-    return;
-  }
-
-  // PR event: checkout PR branch using shared helper
-  const prNumber = params.event.issue_number;
-
-  // use shared checkout helper (handles fork remotes, push config, post-checkout hook)
-  // this updates toolState.pushUrl for fork PRs and sets toolState.issueNumber
-  await checkoutPrBranch(prNumber, params);
+  log.info("» git authentication configured");
 }
