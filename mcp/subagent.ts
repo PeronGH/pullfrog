@@ -6,6 +6,7 @@ import type { Effort } from "../external.ts";
 import { ghPullfrogMcpName } from "../external.ts";
 import { markActivity } from "../utils/activity.ts";
 import type { ResolvedInstructions } from "../utils/instructions.ts";
+import { withLogPrefix } from "../utils/log.ts";
 import { type SubagentState, startSubagentMcpServer, type ToolContext } from "./server.ts";
 
 type CreateSubagentParams = {
@@ -132,41 +133,43 @@ type RunSubagentResult = {
 };
 
 export async function runSubagent(params: RunSubagentParams): Promise<RunSubagentResult> {
-  params.subagent.keepAliveInterval = setInterval(markActivity, 30_000);
-  const mcpServer = await startSubagentMcpServer({
-    ctx: params.ctx,
-    subagentId: params.subagent.id,
-  });
-  // each subagent gets its own tmpdir so parallel agents don't clobber config files
-  const subagentTmpdir = join(params.ctx.tmpdir, params.subagent.id);
-  mkdirSync(subagentTmpdir, { recursive: true });
-  try {
-    const subagentPayload = { ...params.ctx.payload, effort: params.effort };
-    const subagentInstructions = buildSubagentInstructions({
+  return withLogPrefix(`[${params.subagent.label}]`, async () => {
+    params.subagent.keepAliveInterval = setInterval(markActivity, 30_000);
+    const mcpServer = await startSubagentMcpServer({
       ctx: params.ctx,
-      label: params.subagent.label,
-      instructions: params.instructions,
+      subagentId: params.subagent.id,
     });
-    const result = await params.ctx.agent.run({
-      payload: subagentPayload,
-      mcpServerUrl: mcpServer.url,
-      tmpdir: subagentTmpdir,
-      instructions: subagentInstructions,
-    });
-    params.subagent.usage = result.usage;
-    writeFileSync(params.subagent.stdoutFilePath, result.output ?? "", "utf-8");
-    completeSubagent({ ctx: params.ctx, subagent: params.subagent, success: result.success });
-    return { success: result.success, error: result.error };
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    // each subagent gets its own tmpdir so parallel agents don't clobber config files
+    const subagentTmpdir = join(params.ctx.tmpdir, params.subagent.id);
+    mkdirSync(subagentTmpdir, { recursive: true });
     try {
-      writeFileSync(params.subagent.stdoutFilePath, "", "utf-8");
-    } catch {
-      // best-effort
+      const subagentPayload = { ...params.ctx.payload, effort: params.effort };
+      const subagentInstructions = buildSubagentInstructions({
+        ctx: params.ctx,
+        label: params.subagent.label,
+        instructions: params.instructions,
+      });
+      const result = await params.ctx.agent.run({
+        payload: subagentPayload,
+        mcpServerUrl: mcpServer.url,
+        tmpdir: subagentTmpdir,
+        instructions: subagentInstructions,
+      });
+      params.subagent.usage = result.usage;
+      writeFileSync(params.subagent.stdoutFilePath, result.output ?? "", "utf-8");
+      completeSubagent({ ctx: params.ctx, subagent: params.subagent, success: result.success });
+      return { success: result.success, error: result.error };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      try {
+        writeFileSync(params.subagent.stdoutFilePath, "", "utf-8");
+      } catch {
+        // best-effort
+      }
+      completeSubagent({ ctx: params.ctx, subagent: params.subagent, success: false });
+      return { success: false, error: errorMessage };
+    } finally {
+      await mcpServer.stop();
     }
-    completeSubagent({ ctx: params.ctx, subagent: params.subagent, success: false });
-    return { success: false, error: errorMessage };
-  } finally {
-    await mcpServer.stop();
-  }
+  });
 }

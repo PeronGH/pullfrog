@@ -2,10 +2,42 @@
  * Logging utilities that work well in both local and GitHub Actions environments
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as core from "@actions/core";
 import { table } from "table";
 import type { AgentUsage } from "../agents/shared.ts";
 import { isGitHubActions, isInsideDocker } from "./globals.ts";
+
+// --- subagent log prefix via AsyncLocalStorage ---
+
+type LogContext = { prefix: string };
+
+const logContext = new AsyncLocalStorage<LogContext>();
+
+const MAGENTA = "\x1b[35m";
+const RESET = "\x1b[0m";
+
+/** run `fn` with every log line prefixed by `prefix` (e.g. "[task-label]") in magenta */
+export function withLogPrefix<T>(prefix: string, fn: () => Promise<T>): Promise<T> {
+  return logContext.run({ prefix }, fn);
+}
+
+function prefixLines(message: string): string {
+  const ctx = logContext.getStore();
+  if (!ctx) return message;
+  const colored = `${MAGENTA}${ctx.prefix}${RESET} `;
+  return message
+    .split("\n")
+    .map((line) => `${colored}${line}`)
+    .join("\n");
+}
+
+/** plain-text prefix (no ANSI) for GitHub Actions group names */
+function prefixPlain(name: string): string {
+  const ctx = logContext.getStore();
+  if (!ctx) return name;
+  return `${ctx.prefix} ${name}`;
+}
 
 const isRunnerDebugEnabled = () => core.isDebug();
 
@@ -36,10 +68,11 @@ function formatArgs(args: unknown[]): string {
  * Start a collapsed group (GitHub Actions) or regular group (local)
  */
 function startGroup(name: string): void {
+  const prefixed = prefixPlain(name);
   if (isGitHubActions) {
-    core.startGroup(name);
+    core.startGroup(prefixed);
   } else {
-    console.group(name);
+    console.group(prefixed);
   }
 }
 
@@ -153,7 +186,7 @@ function box(
   }
 ): void {
   const boxContent = boxString(text, options);
-  core.info(boxContent);
+  core.info(prefixLines(boxContent));
 }
 
 /**
@@ -200,9 +233,9 @@ function printTable(
   const formatted = table(tableData);
 
   if (title) {
-    core.info(`\n${title}`);
+    core.info(prefixLines(`\n${title}`));
   }
-  core.info(`\n${formatted}\n`);
+  core.info(prefixLines(`\n${formatted}\n`));
 }
 
 /**
@@ -210,7 +243,7 @@ function printTable(
  */
 function separator(length: number = 50): void {
   const separatorText = "─".repeat(length);
-  core.info(separatorText);
+  core.info(prefixLines(separatorText));
 }
 
 /**
@@ -219,32 +252,32 @@ function separator(length: number = 50): void {
 export const log = {
   /** Print info message */
   info: (...args: unknown[]): void => {
-    core.info(`${ts()}${formatArgs(args)}`);
+    core.info(prefixLines(`${ts()}${formatArgs(args)}`));
   },
 
   /** Print a warning message. Use only for warnings that should be displayed in the job summary. */
   warning: (...args: unknown[]): void => {
-    core.warning(`${ts()}${formatArgs(args)}`);
+    core.warning(prefixLines(`${ts()}${formatArgs(args)}`));
   },
 
   /** Print an error message. Use only for errors that should be displayed in the job summary. */
   error: (...args: unknown[]): void => {
-    core.error(`${ts()}${formatArgs(args)}`);
+    core.error(prefixLines(`${ts()}${formatArgs(args)}`));
   },
 
   /** Print success message */
   success: (...args: unknown[]): void => {
-    core.info(`${ts()}» ${formatArgs(args)}`);
+    core.info(prefixLines(`${ts()}» ${formatArgs(args)}`));
   },
 
   /** Print debug message (only when debug mode is enabled) */
   debug: (...args: unknown[]): void => {
     if (isRunnerDebugEnabled()) {
-      core.debug(formatArgs(args));
+      core.debug(prefixLines(formatArgs(args)));
       return;
     }
     if (isLocalDebugEnabled()) {
-      core.info(`${ts()}[DEBUG] ${formatArgs(args)}`);
+      core.info(prefixLines(`${ts()}[DEBUG] ${formatArgs(args)}`));
     }
   },
 

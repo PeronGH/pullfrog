@@ -28846,6 +28846,7 @@ var require_semver2 = __commonJS({
 // utils/log.ts
 var core = __toESM(require_core(), 1);
 var import_table = __toESM(require_src(), 1);
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // utils/globals.ts
 import { existsSync } from "node:fs";
@@ -28854,6 +28855,20 @@ var isGitHubActions = !!process.env.GITHUB_ACTIONS;
 var isInsideDocker = existsSync("/.dockerenv");
 
 // utils/log.ts
+var logContext = new AsyncLocalStorage();
+var MAGENTA = "\x1B[35m";
+var RESET = "\x1B[0m";
+function prefixLines(message) {
+  const ctx = logContext.getStore();
+  if (!ctx) return message;
+  const colored = `${MAGENTA}${ctx.prefix}${RESET} `;
+  return message.split("\n").map((line) => `${colored}${line}`).join("\n");
+}
+function prefixPlain(name) {
+  const ctx = logContext.getStore();
+  if (!ctx) return name;
+  return `${ctx.prefix} ${name}`;
+}
 var isRunnerDebugEnabled = () => core.isDebug();
 var isLocalDebugEnabled = () => process.env.LOG_LEVEL === "debug" || process.env.ACTIONS_STEP_DEBUG === "true";
 var isDebugEnabled = () => isLocalDebugEnabled() || isRunnerDebugEnabled();
@@ -28869,10 +28884,11 @@ ${arg.stack}`;
   }).join(" ");
 }
 function startGroup2(name) {
+  const prefixed = prefixPlain(name);
   if (isGitHubActions) {
-    core.startGroup(name);
+    core.startGroup(prefixed);
   } else {
-    console.group(name);
+    console.group(prefixed);
   }
 }
 function endGroup2() {
@@ -28945,7 +28961,7 @@ function boxString(text, options) {
 }
 function box(text, options) {
   const boxContent = boxString(text, options);
-  core.info(boxContent);
+  core.info(prefixLines(boxContent));
 }
 function printTable(rows, options) {
   const { title } = options || {};
@@ -28959,42 +28975,42 @@ function printTable(rows, options) {
   );
   const formatted = (0, import_table.table)(tableData);
   if (title) {
-    core.info(`
-${title}`);
+    core.info(prefixLines(`
+${title}`));
   }
-  core.info(`
+  core.info(prefixLines(`
 ${formatted}
-`);
+`));
 }
 function separator(length = 50) {
   const separatorText = "\u2500".repeat(length);
-  core.info(separatorText);
+  core.info(prefixLines(separatorText));
 }
 var log = {
   /** Print info message */
   info: (...args2) => {
-    core.info(`${ts()}${formatArgs(args2)}`);
+    core.info(prefixLines(`${ts()}${formatArgs(args2)}`));
   },
   /** Print a warning message. Use only for warnings that should be displayed in the job summary. */
   warning: (...args2) => {
-    core.warning(`${ts()}${formatArgs(args2)}`);
+    core.warning(prefixLines(`${ts()}${formatArgs(args2)}`));
   },
   /** Print an error message. Use only for errors that should be displayed in the job summary. */
   error: (...args2) => {
-    core.error(`${ts()}${formatArgs(args2)}`);
+    core.error(prefixLines(`${ts()}${formatArgs(args2)}`));
   },
   /** Print success message */
   success: (...args2) => {
-    core.info(`${ts()}\xBB ${formatArgs(args2)}`);
+    core.info(prefixLines(`${ts()}\xBB ${formatArgs(args2)}`));
   },
   /** Print debug message (only when debug mode is enabled) */
   debug: (...args2) => {
     if (isRunnerDebugEnabled()) {
-      core.debug(formatArgs(args2));
+      core.debug(prefixLines(formatArgs(args2)));
       return;
     }
     if (isLocalDebugEnabled()) {
-      core.info(`${ts()}[DEBUG] ${formatArgs(args2)}`);
+      core.info(prefixLines(`${ts()}[DEBUG] ${formatArgs(args2)}`));
     }
   },
   /** Print a formatted box with text */
