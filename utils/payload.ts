@@ -178,6 +178,7 @@ export function resolvePayload(
     effort: inputs.effort ?? jsonPayload?.effort ?? "auto",
     timeout: inputs.timeout ?? jsonPayload?.timeout,
     cwd: resolveCwd(inputs.cwd),
+    progressCommentId: jsonPayload?.progressCommentId,
     debug: jsonPayload?.debug,
 
     // permissions: inputs > repoSettings > fallbacks

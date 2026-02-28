@@ -241,6 +241,17 @@ interface ImplementPlanEvent extends BasePayloadEvent {
   body: string | null;
 }
 
+interface PullRequestSynchronizeEvent extends BasePayloadEvent {
+  trigger: "pull_request_synchronize";
+  issue_number: number;
+  is_pr: true;
+  title: string;
+  body: string | null;
+  branch: string;
+  /** SHA before the push -- used to compute incremental diff via `git diff before_sha...HEAD` */
+  before_sha: string;
+}
+
 interface UnknownEvent extends BasePayloadEvent {
   trigger: "unknown";
 }
@@ -250,6 +261,7 @@ interface UnknownEvent extends BasePayloadEvent {
 export type PayloadEvent =
   | PullRequestOpenedEvent
   | PullRequestReadyForReviewEvent
+  | PullRequestSynchronizeEvent
   | PullRequestReviewRequestedEvent
   | PullRequestReviewSubmittedEvent
   | PullRequestReviewCommentCreatedEvent

@@ -99,6 +99,7 @@ export interface ToolContext {
   agent: Agent;
   modes: Mode[];
   postCheckoutScript: string | null;
+  prApproveEnabled: boolean;
   toolState: ToolState;
   runId: number | undefined;
   jobId: string | undefined;

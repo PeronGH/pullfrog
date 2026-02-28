@@ -101,7 +101,7 @@ Keep the progress comment extremely brief. The summary should be 1-2 sentences m
       name: "Review",
       description:
         "Review code, PRs, or implementations; provide feedback or suggestions; identify issues; or check code quality, style, and correctness",
-      prompt: `Follow these steps to review the PR. Your job is to find problems—assume they exist until you've proven otherwise. Do not submit a clean review without thorough investigation. **If you have nothing interesting to say, do NOT submit a review at all—use \`report_progress\` instead.**
+      prompt: `Follow these steps to review the PR. Your job is to find problems—assume they exist until you've proven otherwise. Do not submit a clean review without thorough investigation.
 
 1. **CHECKOUT** - Call ${ghPullfrogMcpName}/checkout_pr with the PR number. This should give you all PR metadata you need, including a \`diffPath\`: a path to a temp file containing the PR diff.
 
@@ -119,13 +119,49 @@ Keep the progress comment extremely brief. The summary should be 1-2 sentences m
    - **Check PR consistency**: Does the PR title/description match the actual code changes? Flag significant discrepancies.
    - Do NOT stop at "this looks reasonable." Dig until you either find a problem or have concrete evidence there isn't one.
 
-4. **DRAFT LINE-BY-LINE COMMENTS** - Every comment must be actionable: the author should need to change something in response. 2-3 sentences max. Use the NEW line number from the diff (second column: \`| OLD | NEW | TYPE | CODE\`). If no issues found, skip to step 5. NO COMPLIMENTS. NO NITPICKING ABOUT CHANGES UNRELATED TO THE MAIN CHANGE. Non-actionable comments (praise, style preferences, minor optimizatfixons, documentation nits) must not be drafted. If no comments survive and you have no significant concerns, **do not submit a review**. Use \`${ghPullfrogMcpName}/report_progress\` to note the PR was reviewed and no issues were found.
+4. **DRAFT LINE-BY-LINE COMMENTS** - Every comment must be actionable: the author should need to change something in response. 2-3 sentences max. Use the NEW line number from the diff (second column: \`| OLD | NEW | TYPE | CODE\`). If no issues found, skip to step 5. NO COMPLIMENTS. NO NITPICKING ABOUT CHANGES UNRELATED TO THE MAIN CHANGE. Non-actionable comments (praise, style preferences, minor optimizatfixons, documentation nits) must not be drafted.
 
-5. **WRITE SUMMARY** - Draft a 1-3 sentence summary for the review body. Include urgency level and any concerns about code outside the diff.
+5. **WRITE SUMMARY** - Draft a 1-3 sentence summary for the review body. If issues were found, include urgency level and any concerns about code outside the diff. If no issues were found, write a brief approval summary (e.g., "Changes look good. No issues found.").
 
-6. **SUBMIT** — Use ${ghPullfrogMcpName}/create_pull_request_review:
+6. **SUBMIT** — Always submit a review via ${ghPullfrogMcpName}/create_pull_request_review:
    - \`body\`: The summary from step 5
    - \`comments\`: The inline comments from step 4
+   - \`approved\`: Set to \`true\` ONLY if the review contains no actionable feedback — neither inline comments nor actionable content in the body. An approval signals "no changes needed."
+
+${permalinkTip}
+`,
+    },
+    {
+      name: "IncrementalReview",
+      description:
+        "Re-review a PR after new commits are pushed; focus on new changes since the last review",
+      prompt: `Follow these steps to incrementally re-review the PR after new commits were pushed. Focus on what changed since the last review.
+
+1. **CHECKOUT** - Call ${ghPullfrogMcpName}/checkout_pr with the PR number. This gives you the full PR diff via \`diffPath\`.
+
+2. **INCREMENTAL DIFF** - EVENT DATA contains \`before_sha\` (the HEAD before this push). Generate the incremental diff:
+   \`git diff <before_sha>...HEAD\`
+   This shows the changes introduced by this push. Cross-reference with previous reviews (step 3) to confirm coverage of all unreviewed changes — the full PR diff fills any gaps.
+   **If the diff command fails** (e.g., force-push rewrote history), fall back to reviewing the full PR diff from step 1.
+
+3. **FETCH PREVIOUS REVIEWS** - Use ${ghPullfrogMcpName}/list_pull_request_reviews to find previous Pullfrog reviews. For the most recent one, call ${ghPullfrogMcpName}/get_review_comments with the review ID to see specific line-level feedback. This lets you avoid repeating issues and assess whether prior feedback was addressed by the new commits.
+
+4. **ANALYZE** - Read the incremental diff to understand the new changes. Use the full PR diff for surrounding context and to catch any changes not covered by the incremental diff.
+   - **Understand the change**: What is new or modified since the last review?
+   - **Evaluate the approach**: Are the new changes sound? Do they address prior feedback?
+
+5. **INVESTIGATE** - Hunt for problems in the new code using the same techniques as a full review:
+   - Trace data flow, check boundaries, explore failure modes, verify assumptions, consider lifecycle, spot performance issues.
+   - Focus investigation on code that changed in the incremental diff, but trace its effects through the broader codebase.
+   - Do NOT repeat feedback already given in previous reviews unless it was not addressed.
+
+6. **DRAFT LINE-BY-LINE COMMENTS** - Every comment must be actionable. 2-3 sentences max. Use the NEW line number from the full PR diff. NO COMPLIMENTS. NO NITPICKING.
+
+7. **WRITE SUMMARY** - Draft a 1-3 sentence summary for the review body. Focus on what changed since the last review and whether the new changes are sound. If issues were found, include urgency level. If no issues were found, write a brief approval summary.
+
+8. **SUBMIT** — Use ${ghPullfrogMcpName}/create_pull_request_review:
+   - \`body\`: The summary from step 7
+   - \`comments\`: The inline comments from step 6
    - \`approved\`: Set to \`true\` ONLY if the review contains no actionable feedback — neither inline comments nor actionable content in the body. An approval signals "no changes needed."
 
 ${permalinkTip}

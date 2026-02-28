@@ -155,6 +155,7 @@ export async function main(): Promise<MainResult> {
       agent,
       modes,
       postCheckoutScript: runContext.repoSettings.postCheckoutScript,
+      prApproveEnabled: runContext.repoSettings.prApproveEnabled,
       toolState,
       runId: runInfo.runId,
       jobId: runInfo.jobId,

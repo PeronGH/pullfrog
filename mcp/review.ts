@@ -1,5 +1,6 @@
 import type { RestEndpointMethodTypes } from "@octokit/rest";
 import { type } from "arktype";
+import { apiFetch } from "../utils/apiFetch.ts";
 import { getApiUrl } from "../utils/apiUrl.ts";
 import { buildPullfrogFooter } from "../utils/buildPullfrogFooter.ts";
 import { log } from "../utils/cli.ts";
@@ -73,12 +74,19 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
       // set issue context (PRs are issues)
       ctx.toolState.issueNumber = pull_number;
 
+      // enforce prApproveEnabled: downgrade APPROVE to COMMENT if disabled
+      let event: "APPROVE" | "COMMENT" = approved ? "APPROVE" : "COMMENT";
+      if (event === "APPROVE" && !ctx.prApproveEnabled) {
+        log.info("prApproveEnabled is disabled — downgrading APPROVE to COMMENT");
+        event = "COMMENT";
+      }
+
       // compose the request
       const params: RestEndpointMethodTypes["pulls"]["createReview"]["parameters"] = {
         owner: ctx.repo.owner,
         repo: ctx.repo.name,
         pull_number,
-        event: approved ? "APPROVE" : "COMMENT",
+        event,
       };
       if (body) params.body = body;
       if (commit_id) {
@@ -115,12 +123,20 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
           return reviewComment;
         });
       }
+
       const result = await ctx.octokit.rest.pulls.createReview(params);
       log.debug(`createReview response: ${JSON.stringify(result.data)}`);
       if (!result.data.id) {
         throw new Error(`createReview returned invalid data: ${JSON.stringify(result.data)}`);
       }
       const reviewId = result.data.id;
+      const reviewNodeId = result.data.node_id;
+
+      // report review node ID to server so the in-flight dedup check
+      // in the synchronize webhook handler sees this run as "review submitted."
+      // awaited (not fire-and-forget) to guarantee the signal lands before
+      // any subsequent push's webhook checks for in-flight runs.
+      await reportReviewNodeId(ctx, reviewNodeId);
 
       // build quick links footer and update the review body
       // only include "Fix all" and "Fix 👍s" links if there are actual review comments
@@ -173,6 +189,35 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
       };
     }),
   });
+}
+
+async function reportReviewNodeId(ctx: ToolContext, reviewNodeId: string): Promise<void> {
+  for (let remaining = 2; remaining >= 0; remaining--) {
+    try {
+      const response = await apiFetch({
+        path: `/api/workflow-run/${ctx.runId}`,
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${ctx.apiToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ reviewNodeId }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (response.ok) return;
+      if (remaining > 0) {
+        log.debug(`reportReviewNodeId got ${response.status}, retrying (${remaining} left)`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    } catch (error) {
+      if (remaining > 0) {
+        log.debug(`reportReviewNodeId failed, retrying (${remaining} left): ${error}`);
+        await new Promise((r) => setTimeout(r, 2000));
+      } else {
+        log.debug(`reportReviewNodeId exhausted retries: ${error}`);
+      }
+    }
+  }
 }
 
 // =============================================================================

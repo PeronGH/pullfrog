@@ -6,7 +6,7 @@ import { execute, tool } from "./shared.ts";
 
 export const SelectModeParams = type({
   mode: type.string.describe(
-    "the name of the mode to select (e.g., 'Build', 'Plan', 'Review', 'Fix', 'AddressReviews', 'Task')"
+    "the name of the mode to select (e.g., 'Build', 'Plan', 'Review', 'IncrementalReview', 'Fix', 'AddressReviews', 'Task')"
   ),
 });
 
@@ -89,9 +89,38 @@ Each task in the \`tasks\` array should include:
 
 After all tasks complete, consolidate into a **single** review:
 - merge the \`comments\` arrays from all subagent outputs
-- submit one \`${ghPullfrogMcpName}/create_pull_request_review\` with the merged comments and a unified summary body
+- if subagents found actionable issues: submit one \`${ghPullfrogMcpName}/create_pull_request_review\` with \`approved: false\`, the merged comments, and a unified summary body
+- if no subagent found actionable issues: submit with \`approved: true\` and a brief positive summary (no inline comments)
 - call \`${ghPullfrogMcpName}/report_progress\` with the summary
-- if no subagent found actionable issues, skip the review — just call \`report_progress\` noting the PR was reviewed
+
+Use max effort for thorough reviews.`,
+
+  IncrementalReview: `### Checklist
+
+1. Checkout the PR via \`${ghPullfrogMcpName}/checkout_pr\` — this returns PR metadata and a \`diffPath\`. Read the diff to identify the major areas of change.
+2. Generate the incremental diff using the \`before_sha\` from EVENT DATA: \`git diff <before_sha>...HEAD\`. This isolates only the new commits. If the command fails (e.g., force-push rewrote history), fall back to reviewing the full PR diff.
+3. Fetch previous reviews via \`${ghPullfrogMcpName}/list_pull_request_reviews\`. For the most recent Pullfrog review, call \`${ghPullfrogMcpName}/get_review_comments\` with the review ID to retrieve specific prior line-level feedback. Include the prior review summary and comment details when crafting subagent tasks.
+4. Delegate multiple subagents in a single \`${ghPullfrogMcpName}/delegate\` call, each focused on a specific area of the new changes. Provide both the full diff path and the incremental diff.
+5. After all subagents return, consolidate their findings into a single review.
+
+### Crafting each task
+
+Each task in the \`tasks\` array should include:
+- the full diff file path AND the incremental diff (so the subagent can see both new changes and full context)
+- what specific area/aspect to focus on
+- instruct it to prioritize reviewing code in the incremental diff while using the full diff for context and to catch any changes not covered by the incremental diff
+- include the prior review comments (from step 3) so the subagent knows what feedback was already given — instruct it to avoid repeating prior issues and to note whether prior feedback was addressed by the new commits
+- instruct it to actively hunt for problems: trace data flow, check boundaries, explore failure modes, verify assumptions, consider lifecycle, spot performance issues
+- draft inline comments with NEW line numbers from the full PR diff — every comment must be actionable (2-3 sentences max)
+- call \`${ghPullfrogMcpName}/set_output\` with a JSON object: \`{ "summary": "...", "comments": [{ "path": "file.ts", "line": 42, "body": "..." }, ...] }\`
+
+### Post-delegation
+
+After all tasks complete, consolidate into a **single** review:
+- merge the \`comments\` arrays from all subagent outputs
+- if subagents found actionable issues: submit one \`${ghPullfrogMcpName}/create_pull_request_review\` with \`approved: false\`, the merged comments, and a unified summary body
+- if no subagent found actionable issues: submit with \`approved: true\` and a brief positive summary (no inline comments)
+- call \`${ghPullfrogMcpName}/report_progress\` with the summary
 
 Use max effort for thorough reviews.`,
 

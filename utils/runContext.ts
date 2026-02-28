@@ -19,6 +19,7 @@ export interface RepoSettings {
   search: ToolPermission;
   push: PushPermission;
   shell: ShellPermission;
+  prApproveEnabled: boolean;
 }
 
 export interface RunContext {
@@ -36,6 +37,7 @@ const defaultSettings: RepoSettings = {
   search: "enabled",
   push: "restricted",
   shell: "restricted",
+  prApproveEnabled: false,
 };
 
 const defaultRunContext: RunContext = {

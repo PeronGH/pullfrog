@@ -72,6 +72,7 @@ async function fetchBodyHtml(ctx: ResolveBodyContext): Promise<string | undefine
 
     case "pull_request_opened":
     case "pull_request_ready_for_review":
+    case "pull_request_synchronize":
     case "pull_request_review_requested":
       // PRs are also issues - use issues.get which returns body_html
       if (!event.issue_number) return;
