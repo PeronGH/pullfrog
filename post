@@ -24695,7 +24695,7 @@ var require_lodash = __commonJS({
     var symbolProto = Symbol2 ? Symbol2.prototype : void 0;
     var symbolToString = symbolProto ? symbolProto.toString : void 0;
     function baseIsRegExp(value2) {
-      return isObject(value2) && objectToString.call(value2) == regexpTag;
+      return isObject2(value2) && objectToString.call(value2) == regexpTag;
     }
     function baseSlice(array, start, end) {
       var index = -1, length = array.length;
@@ -24729,7 +24729,7 @@ var require_lodash = __commonJS({
       end = end === void 0 ? length : end;
       return !start && end >= length ? array : baseSlice(array, start, end);
     }
-    function isObject(value2) {
+    function isObject2(value2) {
       var type2 = typeof value2;
       return !!value2 && (type2 == "object" || type2 == "function");
     }
@@ -24762,9 +24762,9 @@ var require_lodash = __commonJS({
       if (isSymbol(value2)) {
         return NAN;
       }
-      if (isObject(value2)) {
+      if (isObject2(value2)) {
         var other = typeof value2.valueOf == "function" ? value2.valueOf() : value2;
-        value2 = isObject(other) ? other + "" : other;
+        value2 = isObject2(other) ? other + "" : other;
       }
       if (typeof value2 != "string") {
         return value2 === 0 ? value2 : +value2;
@@ -24778,7 +24778,7 @@ var require_lodash = __commonJS({
     }
     function truncate(string2, options) {
       var length = DEFAULT_TRUNC_LENGTH, omission = DEFAULT_TRUNC_OMISSION;
-      if (isObject(options)) {
+      if (isObject2(options)) {
         var separator2 = "separator" in options ? options.separator : separator2;
         length = "length" in options ? toInteger(options.length) : length;
         omission = "omission" in options ? baseToString(options.omission) : omission;
@@ -41183,6 +41183,9 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
 );
 
 // utils/github.ts
+function isObject(value2) {
+  return typeof value2 === "object" && value2 !== null;
+}
 function parseRepoContext() {
   const githubRepo = process.env.GITHUB_REPOSITORY;
   if (!githubRepo) {
@@ -41194,9 +41197,20 @@ function parseRepoContext() {
   }
   return { owner, name };
 }
+function emptyResourceUsage() {
+  return {
+    requestCount: 0,
+    rateLimitRemaining: null,
+    rateLimitResetMs: null
+  };
+}
+var usageByResource = {
+  core: emptyResourceUsage(),
+  graphql: emptyResourceUsage()
+};
 function createOctokit(token) {
   const OctokitWithPlugins = Octokit2.plugin(throttling);
-  return new OctokitWithPlugins({
+  const octokit = new OctokitWithPlugins({
     auth: token,
     throttle: {
       onRateLimit: (_retryAfter, _options, _octokit, retryCount) => {
@@ -41207,6 +41221,37 @@ function createOctokit(token) {
       }
     }
   });
+  const onResponse = (response) => {
+    const resource = response.headers["x-ratelimit-resource"];
+    if (!resource) {
+      return response;
+    }
+    usageByResource[resource] ??= emptyResourceUsage();
+    const usage = usageByResource[resource];
+    usage.requestCount++;
+    const remaining = response.headers["x-ratelimit-remaining"];
+    const reset = response.headers["x-ratelimit-reset"];
+    if (remaining !== void 0) {
+      usage.rateLimitRemaining = Number(remaining);
+    }
+    if (reset !== void 0) {
+      usage.rateLimitResetMs = Number(reset) * 1e3;
+    }
+    return response;
+  };
+  octokit.hook.wrap("request", async (request2, options) => {
+    try {
+      const response = await request2(options);
+      onResponse(response);
+      return response;
+    } catch (error2) {
+      if (isObject(error2) && "response" in error2 && isObject(error2.response) && "headers" in error2.response && isObject(error2.response.headers)) {
+        onResponse(error2.response);
+      }
+      throw error2;
+    }
+  });
+  return octokit;
 }
 
 // mcp/comment.ts

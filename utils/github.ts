@@ -1,9 +1,23 @@
 import { createSign } from "node:crypto";
+import { rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import * as core from "@actions/core";
 import { throttling } from "@octokit/plugin-throttling";
 import { Octokit } from "@octokit/rest";
 import { apiFetch } from "./apiFetch.ts";
 import { retry } from "./retry.ts";
+
+function isObject(value: unknown) {
+  return typeof value === "object" && value !== null;
+}
+
+// we don't get access to the actual class from @octokit/rest
+// it's reachable from @octokit/request-error but we'd have to add a dependency on it
+// and it would pose a risk of accidentally pulling a different version of that class (node_modules dep graphs ❤️)
+// so it's safer to ducktype this
+interface OctokitResponseShim {
+  headers: Record<string, string | number | undefined>;
+}
 
 export interface InstallationToken {
   token: string;
@@ -339,11 +353,55 @@ export type OctokitWithPlugins = InstanceType<
   ReturnType<typeof Octokit.plugin<typeof Octokit, [typeof throttling]>>
 >;
 
+export interface ResourceUsage {
+  requestCount: number;
+  rateLimitRemaining: number | null;
+  rateLimitResetMs: number | null;
+}
+
+function emptyResourceUsage(): ResourceUsage {
+  return {
+    requestCount: 0,
+    rateLimitRemaining: null,
+    rateLimitResetMs: null,
+  };
+}
+
+const usageByResource: Record<string, ResourceUsage> = {
+  core: emptyResourceUsage(),
+  graphql: emptyResourceUsage(),
+};
+
+export interface UsageSummary {
+  version: 1;
+  github: {
+    core: ResourceUsage;
+    graphql: ResourceUsage;
+  };
+}
+
+function getGitHubUsageSummary(): UsageSummary {
+  return {
+    version: 1,
+    github: {
+      core: usageByResource.core,
+      graphql: usageByResource.graphql,
+    },
+  };
+}
+
+export async function writeGitHubUsageSummaryToFile(path: string): Promise<void> {
+  const summary = getGitHubUsageSummary();
+  const tmpPath = join(dirname(path), `.usage-summary-${process.pid}.tmp`);
+  await writeFile(tmpPath, JSON.stringify(summary));
+  await rename(tmpPath, path);
+}
+
 export function createOctokit(token: string): OctokitWithPlugins {
   // `OctokitWithPlugins` initialization based on https://github.com/actions/toolkit/blob/2506e78e82fbd2f9e94d63e75f5309118c8de1b1/packages/github/src/github.ts#L15-L22
   // we can't use it directly because it's stuck on `@octokit/core@v5` and we use the hottest `@octokit/core@v7`
   const OctokitWithPlugins = Octokit.plugin(throttling);
-  return new OctokitWithPlugins({
+  const octokit = new OctokitWithPlugins({
     auth: token,
     throttle: {
       onRateLimit: (_retryAfter, _options, _octokit, retryCount) => {
@@ -354,4 +412,44 @@ export function createOctokit(token: string): OctokitWithPlugins {
       },
     },
   });
+
+  const onResponse = (response: OctokitResponseShim) => {
+    const resource = response.headers["x-ratelimit-resource"];
+    if (!resource) {
+      return response;
+    }
+    usageByResource[resource] ??= emptyResourceUsage();
+    const usage = usageByResource[resource];
+    usage.requestCount++;
+    const remaining = response.headers["x-ratelimit-remaining"];
+    const reset = response.headers["x-ratelimit-reset"];
+    if (remaining !== undefined) {
+      usage.rateLimitRemaining = Number(remaining);
+    }
+    if (reset !== undefined) {
+      usage.rateLimitResetMs = Number(reset) * 1000;
+    }
+    return response;
+  };
+
+  octokit.hook.wrap("request", async (request, options) => {
+    try {
+      const response = await request(options);
+      onResponse(response);
+      return response;
+    } catch (error) {
+      if (
+        isObject(error) &&
+        "response" in error &&
+        isObject(error.response) &&
+        "headers" in error.response &&
+        isObject(error.response.headers)
+      ) {
+        onResponse(error.response as OctokitResponseShim);
+      }
+      throw error;
+    }
+  });
+
+  return octokit;
 }

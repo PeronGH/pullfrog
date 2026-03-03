@@ -12,8 +12,9 @@ import { validateAgentApiKey } from "./utils/apiKeys.ts";
 import { resolveBody } from "./utils/body.ts";
 import { formatUsageSummary, log, writeSummary } from "./utils/cli.ts";
 import { reportErrorToComment } from "./utils/errorReport.ts";
+import { onExitSignal } from "./utils/exitHandler.ts";
 import { resolveGit } from "./utils/gitAuth.ts";
-import { createOctokit } from "./utils/github.ts";
+import { createOctokit, writeGitHubUsageSummaryToFile } from "./utils/github.ts";
 import { resolveInstructions } from "./utils/instructions.ts";
 import { executeLifecycleHook } from "./utils/lifecycle.ts";
 import { normalizeEnv } from "./utils/normalizeEnv.ts";
@@ -47,6 +48,12 @@ async function writeJobSummary(toolState: ToolState): Promise<void> {
 export async function main(): Promise<MainResult> {
   // normalize env var names to uppercase (handles case-insensitive workflow files)
   normalizeEnv();
+
+  // write usage summary on SIGINT/SIGTERM so the worker can read it after sandbox.exec
+  const usageSummaryPath = process.env.PULLFROG_USAGE_SUMMARY_PATH;
+  if (usageSummaryPath) {
+    onExitSignal(() => writeGitHubUsageSummaryToFile(usageSummaryPath));
+  }
 
   const timer = new Timer();
   let activityTimeout: ActivityTimeout | null = null;
@@ -267,5 +274,8 @@ export async function main(): Promise<MainResult> {
     };
   } finally {
     activityTimeout?.stop();
+    if (usageSummaryPath) {
+      await writeGitHubUsageSummaryToFile(usageSummaryPath);
+    }
   }
 }

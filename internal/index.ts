@@ -30,7 +30,7 @@ export {
   PULLFROG_DIVIDER,
   stripExistingFooter,
 } from "../utils/buildPullfrogFooter.ts";
-
+export type { ResourceUsage, UsageSummary } from "../utils/github.ts";
 export {
   isValidTimeString,
   parseTimeString,

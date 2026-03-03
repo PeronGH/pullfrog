@@ -25699,8 +25699,8 @@ function formatJsonValue(value) {
 }
 
 // utils/github.ts
-var core2 = __toESM(require_core(), 1);
 import { createSign } from "node:crypto";
+var core2 = __toESM(require_core(), 1);
 
 // utils/apiUrl.ts
 function isLocalUrl(url) {
@@ -25930,6 +25930,17 @@ function parseRepoContext() {
   }
   return { owner, name };
 }
+function emptyResourceUsage() {
+  return {
+    requestCount: 0,
+    rateLimitRemaining: null,
+    rateLimitResetMs: null
+  };
+}
+var usageByResource = {
+  core: emptyResourceUsage(),
+  graphql: emptyResourceUsage()
+};
 
 // utils/token.ts
 async function revokeGitHubInstallationToken(token) {
