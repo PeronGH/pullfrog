@@ -135,7 +135,7 @@ Use max effort for thorough reviews.`,
 
 ### Effort
 
-Use mini or auto effort. After receiving the plan, you may delegate a Build subagent to implement it.`,
+Use mini or auto effort.`,
 
   Fix: `### Checklist
 
@@ -196,9 +196,15 @@ export function SelectModeTool(ctx: ToolContext) {
   return tool({
     name: "select_mode",
     description:
-      "Select a mode and receive orchestrator-level guidance on how to handle it, including suggested delegation flows and prompt-crafting tips. Call this before delegating to understand the best approach for the task.",
+      "Select a mode and receive orchestrator-level guidance on how to handle it, including suggested delegation flows and prompt-crafting tips. Call this ONCE before delegating. Mode selection is final — you cannot switch modes after selecting.",
     parameters: SelectModeParams,
     execute: execute(async (params) => {
+      if (ctx.toolState.selectedMode) {
+        return {
+          error: `mode already selected: "${ctx.toolState.selectedMode}". mode selection is final and cannot be changed. complete your current workflow within this mode.`,
+        };
+      }
+
       const selectedMode = resolveMode(ctx.modes, params.mode);
 
       if (!selectedMode) {
