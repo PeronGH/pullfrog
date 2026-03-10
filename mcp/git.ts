@@ -108,6 +108,15 @@ export function PushBranchTool(ctx: ToolContext) {
 
       const branch = branchName || $("git", ["rev-parse", "--abbrev-ref", "HEAD"], { log: false });
 
+      // reject push if working tree is dirty — forces agent to commit or discard before pushing
+      const status = $("git", ["status", "--porcelain"], { log: false });
+      if (status) {
+        throw new Error(
+          `push blocked: working tree has uncommitted changes. commit or discard them before pushing.\n\n` +
+            `git status:\n${status}`
+        );
+      }
+
       // validate push destination matches expected URL
       const pushUrl = ctx.toolState.pushUrl;
       if (!pushUrl) {
