@@ -88,7 +88,6 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
         pull_number,
         event,
       };
-      if (body) params.body = body;
       if (commit_id) {
         params.commit_id = commit_id;
       } else {
@@ -124,8 +123,16 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
         });
       }
 
-      const result = await ctx.octokit.rest.pulls.createReview(params);
-      log.debug(`createReview response: ${JSON.stringify(result.data)}`);
+      // no body → single-step createReview (no footer needed)
+      // has body → pending + submit so we can build footer with Fix links using review ID
+      const result = body
+        ? await createAndSubmitWithFooter(ctx, params, {
+            body,
+            approved: approved ?? false,
+            hasComments: comments.length > 0,
+          })
+        : await ctx.octokit.rest.pulls.createReview(params);
+
       if (!result.data.id) {
         throw new Error(`createReview returned invalid data: ${JSON.stringify(result.data)}`);
       }
@@ -137,46 +144,6 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
       // awaited (not fire-and-forget) to guarantee the signal lands before
       // any subsequent push's webhook checks for in-flight runs.
       await reportReviewNodeId(ctx, reviewNodeId);
-
-      // build quick links footer and update the review body
-      // only include "Fix all" and "Fix 👍s" links if there are actual review comments
-      const customParts: string[] = [];
-      if (!approved) {
-        if (comments.length > 0) {
-          const apiUrl = getApiUrl();
-          const fixAllUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${pull_number}?action=fix&review_id=${reviewId}`;
-          const fixApprovedUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${pull_number}?action=fix-approved&review_id=${reviewId}`;
-          customParts.push(`[Fix all ➔](${fixAllUrl})`, `[Fix 👍s ➔](${fixApprovedUrl})`);
-        } else if (body) {
-          const apiUrl = getApiUrl();
-          const fixUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${pull_number}?action=fix&review_id=${reviewId}`;
-          customParts.push(`[Fix it ➔](${fixUrl})`);
-        }
-      }
-
-      const footer = buildPullfrogFooter({
-        workflowRun: ctx.runId
-          ? {
-              owner: ctx.repo.owner,
-              repo: ctx.repo.name,
-              runId: ctx.runId,
-              jobId: ctx.jobId,
-            }
-          : undefined,
-        customParts,
-      });
-
-      const updatedBody = (body || "") + footer;
-
-      // update the review with the footer
-      await ctx.octokit.rest.pulls.updateReview({
-        owner: ctx.repo.owner,
-        repo: ctx.repo.name,
-        pull_number,
-        review_id: reviewId,
-        body: updatedBody,
-      });
-
       await deleteProgressComment(ctx);
 
       return {
@@ -188,6 +155,50 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
         submitted_at: result.data.submitted_at,
       };
     }),
+  });
+}
+
+type FooterOpts = { body: string; approved: boolean; hasComments: boolean };
+
+async function createAndSubmitWithFooter(
+  ctx: ToolContext,
+  params: RestEndpointMethodTypes["pulls"]["createReview"]["parameters"],
+  opts: FooterOpts
+) {
+  // create as PENDING (strip event) so we get the review ID before publishing
+  const { event: _, ...pendingParams } = params;
+  const pending = await ctx.octokit.rest.pulls.createReview(pendingParams);
+  if (!pending.data.id) {
+    throw new Error(`createReview returned invalid data: ${JSON.stringify(pending.data)}`);
+  }
+
+  const customParts: string[] = [];
+  if (!opts.approved) {
+    const apiUrl = getApiUrl();
+    if (opts.hasComments) {
+      const fixAllUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${params.pull_number}?action=fix&review_id=${pending.data.id}`;
+      const fixApprovedUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${params.pull_number}?action=fix-approved&review_id=${pending.data.id}`;
+      customParts.push(`[Fix all ➔](${fixAllUrl})`, `[Fix 👍s ➔](${fixApprovedUrl})`);
+    } else {
+      const fixUrl = `${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${params.pull_number}?action=fix&review_id=${pending.data.id}`;
+      customParts.push(`[Fix it ➔](${fixUrl})`);
+    }
+  }
+
+  const footer = buildPullfrogFooter({
+    workflowRun: ctx.runId
+      ? { owner: ctx.repo.owner, repo: ctx.repo.name, runId: ctx.runId, jobId: ctx.jobId }
+      : undefined,
+    customParts,
+  });
+
+  return ctx.octokit.rest.pulls.submitReview({
+    owner: params.owner,
+    repo: params.repo,
+    pull_number: params.pull_number,
+    review_id: pending.data.id,
+    event: params.event!,
+    body: opts.body + footer,
   });
 }
 
