@@ -11,7 +11,8 @@ import { execute, tool } from "./shared.ts";
 
 type CommentNodeIdField = "planCommentNodeId" | "summaryCommentNodeId";
 
-/** PATCH workflow-run with a comment node_id so future runs can update that comment in place. */
+// IMPORTANT: this route authenticates via Pullfrog API JWT (verifyApiToken),
+// NOT a GitHub token. use ctx.apiToken here. see wiki/api-auth.md.
 export async function updateCommentNodeId(
   ctx: ToolContext,
   field: CommentNodeIdField,
@@ -128,6 +129,30 @@ export function CreateCommentTool(ctx: ToolContext) {
     parameters: Comment,
     execute: execute(async ({ issueNumber, body, type: commentType }) => {
       const bodyWithFooter = await addFooter(ctx, body);
+
+      // if a summary comment already exists (found by select_mode), update instead of creating
+      if (commentType === "Summary" && ctx.toolState.existingSummaryCommentId) {
+        log.info(
+          `» redirecting create_issue_comment(Summary) to update existing comment ${ctx.toolState.existingSummaryCommentId}`
+        );
+        const result = await ctx.octokit.rest.issues.updateComment({
+          owner: ctx.repo.owner,
+          repo: ctx.repo.name,
+          comment_id: ctx.toolState.existingSummaryCommentId,
+          body: bodyWithFooter,
+        });
+
+        if (result.data.node_id) {
+          await updateCommentNodeId(ctx, "summaryCommentNodeId", result.data.node_id);
+        }
+
+        return {
+          success: true,
+          commentId: result.data.id,
+          url: result.data.html_url,
+          body: result.data.body,
+        };
+      }
 
       const result = await ctx.octokit.rest.issues.createComment({
         owner: ctx.repo.owner,

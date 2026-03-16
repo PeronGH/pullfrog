@@ -8,10 +8,10 @@ import { fixDoubleEscapedString } from "../utils/fixDoubleEscapedString.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
-function isStatusError(err: unknown): err is { status: number; message?: string } {
-  return (
-    typeof err === "object" && err !== null && "status" in err && typeof err.status === "number"
-  );
+function getHttpStatus(err: unknown): number | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const status = (err as Record<string, unknown>).status;
+  return typeof status === "number" ? status : undefined;
 }
 
 // one-shot review tool
@@ -35,7 +35,7 @@ export const CreatePullRequestReview = type({
       "The file path to comment on (relative to repo root). Must be a file that appears in the PR diff."
     ),
     line: type.number.describe(
-      "End line of the comment range. For single-line comments, set equal to 'start_line'. Use NEW column from diff format."
+      "Line number to comment on. For multi-line ranges, this is the end line. Use NEW column from diff format."
     ),
     side: type
       .enumerated("LEFT", "RIGHT")
@@ -51,9 +51,11 @@ export const CreatePullRequestReview = type({
         "Full replacement code for the line range [start_line, line]. MUST preserve the exact indentation of the original code."
       )
       .optional(),
-    start_line: type.number.describe(
-      "Start line of the comment range. For single-line comments, set equal to 'line'. The range [start_line, line] defines which lines a suggestion replaces."
-    ),
+    start_line: type.number
+      .describe(
+        "Start line for multi-line comment ranges. Omit for single-line comments. The range [start_line, line] defines which lines a suggestion replaces."
+      )
+      .optional(),
   })
     .array()
     .describe(
@@ -67,14 +69,14 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
     name: "create_pull_request_review",
     description:
       "Submit a review for an existing pull request. " +
+      "Each call creates a permanent, visible review on the PR — NEVER submit test or diagnostic reviews. " +
       "IMPORTANT: 95%+ of feedback should be in 'comments' array with file paths and line numbers. " +
       "Only use 'body' for a 1-2 sentence summary with urgency and critical callouts. " +
       "Use 'suggestion' to propose replacement code - MUST preserve exact indentation of original code. " +
       "Example replacing lines 42-44 (3 lines) with 5 lines: " +
       `{ path: 'src/api.ts', start_line: 42, line: 44, suggestion: '    const result = await fetch(url);\\n    if (!result.ok) {\\n      log.error(result.status);\\n      throw new Error("request failed");\\n    }' }` +
       " CONSTRAINT: Inline comments can ONLY target files and lines that appear in the PR diff." +
-      " Commenting on files or lines outside the diff will cause GitHub API errors." +
-      " Put feedback about code outside the diff in 'body' instead.",
+      " If GitHub rejects comments due to incorrect line numbers, re-read the diff and retry.",
     parameters: CreatePullRequestReview,
     execute: execute(async ({ pull_number, body, approved, commit_id, comments = [] }) => {
       if (body) body = fixDoubleEscapedString(body);
@@ -95,6 +97,7 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
         pull_number,
         event,
       };
+      let latestHeadSha: string | undefined;
       if (commit_id) {
         params.commit_id = commit_id;
       } else {
@@ -103,28 +106,39 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
           repo: ctx.repo.name,
           pull_number,
         });
-        params.commit_id = pr.data.head.sha;
+        latestHeadSha = pr.data.head.sha;
+        // anchor to checkout sha so line numbers match the diff the agent analyzed
+        params.commit_id = ctx.toolState.checkoutSha ?? latestHeadSha;
+        if (ctx.toolState.checkoutSha && latestHeadSha !== ctx.toolState.checkoutSha) {
+          log.info(
+            `anchoring review to checkout ${ctx.toolState.checkoutSha.slice(0, 7)} ` +
+              `(HEAD is now ${latestHeadSha.slice(0, 7)})`
+          );
+        }
       }
-      if (comments.length > 0) {
-        type ReviewComment = (typeof params.comments & {})[number];
-        params.comments = comments.map((comment) => {
-          let commentBody = fixDoubleEscapedString(comment.body || "");
-          if (comment.suggestion !== undefined) {
-            const suggestionBlock = "```suggestion\n" + comment.suggestion + "\n```";
-            commentBody = commentBody ? commentBody + "\n\n" + suggestionBlock : suggestionBlock;
-          }
+      type ReviewComment = NonNullable<typeof params.comments>[number];
+      const reviewComments = comments.map((comment) => {
+        let commentBody = fixDoubleEscapedString(comment.body || "");
+        if (comment.suggestion !== undefined) {
+          const suggestionBlock = "```suggestion\n" + comment.suggestion + "\n```";
+          commentBody = commentBody ? commentBody + "\n\n" + suggestionBlock : suggestionBlock;
+        }
+        const side = comment.side || "RIGHT";
+        const reviewComment: ReviewComment = {
+          path: comment.path,
+          line: comment.line,
+          body: commentBody,
+          side,
+        };
+        if (comment.start_line != null && comment.start_line !== comment.line) {
+          reviewComment.start_line = comment.start_line;
+          reviewComment.start_side = side;
+        }
+        return reviewComment;
+      });
 
-          const side = comment.side || "RIGHT";
-          const reviewComment: ReviewComment = {
-            path: comment.path,
-            line: comment.line,
-            body: commentBody,
-            side,
-            start_line: comment.start_line,
-            start_side: side,
-          };
-          return reviewComment;
-        });
+      if (reviewComments.length > 0) {
+        params.comments = reviewComments;
       }
 
       // no body → single-step createReview (no footer needed)
@@ -135,20 +149,24 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
           ? await createAndSubmitWithFooter(ctx, params, {
               body,
               approved: approved ?? false,
-              hasComments: comments.length > 0,
+              hasComments: reviewComments.length > 0,
             })
           : await ctx.octokit.rest.pulls.createReview(params);
       } catch (err: unknown) {
-        if (isStatusError(err) && err.status === 422 && params.comments?.length) {
-          const paths = [...new Set(params.comments.map((comment) => comment.path))];
-          throw new Error(
-            `${err.message ?? "422 Unprocessable Entity"}. ` +
-              `The review had ${params.comments.length} inline comment(s) targeting these paths: ${paths.join(", ")}. ` +
-              `GitHub cannot resolve one or more of these paths in the PR diff (common when the PR has >100 changed files and some are truncated). ` +
-              `Fix: remove the failing comment(s) and retry. Put their feedback in the review body instead.`
-          );
-        }
-        throw err;
+        if (getHttpStatus(err) !== 422 || !params.comments?.length) throw err;
+
+        const details = params.comments.map((c) => {
+          const line = c.line ?? 0;
+          const startLine = c.start_line ?? line;
+          const range = startLine !== line ? `${startLine}-${line}` : `${line}`;
+          return `${c.path}:${range} (${c.side ?? "RIGHT"})`;
+        });
+        throw new Error(
+          `GitHub rejected inline comment(s) with "Line could not be resolved". ` +
+            `This usually means the diff changed since you last read it (new commits pushed). ` +
+            `Re-read the diff to get current line numbers, or move failing comments to the review body. ` +
+            `Affected: ${details.join(", ")}`
+        );
       }
       log.debug(`createReview response: ${JSON.stringify(result.data)}`);
       if (!result.data.id) {
@@ -169,12 +187,13 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
 
       // detect commits pushed since checkout and guide the agent to review them
       // inline instead of dispatching a separate workflow run
-      const headMovedDuringReview =
-        ctx.toolState.checkoutSha && params.commit_id !== ctx.toolState.checkoutSha;
-
-      if (headMovedDuringReview) {
-        const fromSha = ctx.toolState.checkoutSha!;
-        const toSha = params.commit_id!;
+      if (
+        ctx.toolState.checkoutSha &&
+        latestHeadSha &&
+        latestHeadSha !== ctx.toolState.checkoutSha
+      ) {
+        const fromSha = ctx.toolState.checkoutSha;
+        const toSha = latestHeadSha;
         // advance checkoutSha so the next review submission tracks correctly
         ctx.toolState.checkoutSha = toSha;
 

@@ -58,10 +58,16 @@ describe("latest model per provider snapshot", async () => {
 
     let latest: { modelId: string; releaseDate: string } | undefined;
     for (const [modelId, model] of Object.entries(providerData.models)) {
-      if (model.status === "deprecated") continue;
+      // skip non-GA models so beta/nightly churn doesn't break the snapshot
+      if (model.status) continue;
       const rd = model.release_date;
       if (!rd) continue;
-      if (!latest || rd > latest.releaseDate) {
+      // tiebreak by modelId for stable ordering when release dates match
+      if (
+        !latest ||
+        rd > latest.releaseDate ||
+        (rd === latest.releaseDate && modelId > latest.modelId)
+      ) {
         latest = { modelId, releaseDate: rd };
       }
     }

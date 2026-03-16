@@ -19,7 +19,7 @@ exports[`latest model per provider snapshot > matches snapshot 1`] = `
     "releaseDate": "2026-01",
   },
   "openai": {
-    "modelId": "gpt-5.4",
+    "modelId": "gpt-5.4-pro",
     "releaseDate": "2026-03-05",
   },
   "opencode": {
@@ -31,8 +31,8 @@ exports[`latest model per provider snapshot > matches snapshot 1`] = `
     "releaseDate": "2026-03-11",
   },
   "xai": {
-    "modelId": "grok-4.20-beta-latest-non-reasoning",
-    "releaseDate": "2026-03-09",
+    "modelId": "grok-4-1-fast-non-reasoning",
+    "releaseDate": "2025-11-19",
   },
 }
 `;

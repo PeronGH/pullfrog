@@ -2,6 +2,7 @@ import { type } from "arktype";
 import { ghPullfrogMcpName } from "../external.ts";
 import type { Mode } from "../modes.ts";
 import { apiFetch } from "../utils/apiFetch.ts";
+import { log } from "../utils/log.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
@@ -253,16 +254,19 @@ export type PlanCommentResponsePayload = { error: string } | { commentId: number
 // matches the API response for /repo/[owner]/[repo]/pr/[prNumber]/summary-comment
 export type SummaryCommentResponsePayload = { error: string } | { commentId: number; body: string };
 
+// IMPORTANT: these routes authenticate via GitHub installation token (getEnrichedRepo),
+// NOT the Pullfrog API JWT (ctx.apiToken). use ctx.githubInstallationToken here.
+// see wiki/api-auth.md for the two auth patterns.
 async function fetchExistingPlanComment(
   ctx: ToolContext,
   issueNumber: number
 ): Promise<Extract<PlanCommentResponsePayload, { commentId: number }> | null> {
-  if (!ctx.apiToken) return null;
+  if (!ctx.githubInstallationToken) return null;
   try {
     const response = await apiFetch({
       path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/issue/${issueNumber}/plan-comment`,
       method: "GET",
-      headers: { authorization: `Bearer ${ctx.apiToken}` },
+      headers: { authorization: `Bearer ${ctx.githubInstallationToken}` },
       signal: AbortSignal.timeout(10_000),
     });
     const data = (await response.json()) as PlanCommentResponsePayload;
@@ -276,17 +280,27 @@ async function fetchExistingSummaryComment(
   ctx: ToolContext,
   prNumber: number
 ): Promise<Extract<SummaryCommentResponsePayload, { commentId: number }> | null> {
-  if (!ctx.apiToken) return null;
+  if (!ctx.githubInstallationToken) {
+    log.warning("fetchExistingSummaryComment: no token, skipping");
+    return null;
+  }
+  const path = `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/pr/${prNumber}/summary-comment`;
   try {
     const response = await apiFetch({
-      path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/pr/${prNumber}/summary-comment`,
+      path,
       method: "GET",
-      headers: { authorization: `Bearer ${ctx.apiToken}` },
+      headers: { authorization: `Bearer ${ctx.githubInstallationToken}` },
       signal: AbortSignal.timeout(10_000),
     });
     const data = (await response.json()) as SummaryCommentResponsePayload;
-    return response.ok && "commentId" in data ? data : null;
-  } catch {
+    if (response.ok && "commentId" in data) {
+      return data;
+    }
+    const errMsg = "error" in data ? data.error : "(no error body)";
+    log.warning(`fetchExistingSummaryComment: ${response.status} ${path} — ${errMsg}`);
+    return null;
+  } catch (error) {
+    log.warning("fetchExistingSummaryComment failed:", error);
     return null;
   }
 }
