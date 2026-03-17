@@ -55,6 +55,7 @@ export const LEAPING_INTO_ACTION_PREFIX = "Leaping into action";
 interface BuildCommentFooterParams {
   octokit?: OctokitWithPlugins | undefined;
   customParts?: string[] | undefined;
+  model?: string | undefined;
 }
 
 async function buildCommentFooter(params: BuildCommentFooterParams): Promise<string> {
@@ -77,17 +78,14 @@ async function buildCommentFooter(params: BuildCommentFooterParams): Promise<str
     }
   }
 
-  const footerParams = {
+  return buildPullfrogFooter({
     triggeredBy: true,
     workflowRun: runId
       ? { owner: repoContext.owner, repo: repoContext.name, runId, jobId }
       : undefined,
-  };
-
-  if (params.customParts && params.customParts.length > 0) {
-    return buildPullfrogFooter({ ...footerParams, customParts: params.customParts });
-  }
-  return buildPullfrogFooter(footerParams);
+    customParts: params.customParts,
+    model: params.model,
+  });
 }
 
 function buildImplementPlanLink(
@@ -102,11 +100,17 @@ function buildImplementPlanLink(
 
 export interface AddFooterCtx {
   octokit?: OctokitWithPlugins | undefined;
+  toolState?: { model?: string | undefined } | undefined;
 }
 
 export async function addFooter(ctx: AddFooterCtx, body: string): Promise<string> {
+  if (/<br\s*\/?>[ \t]*\n(?!\s*\n)/i.test(body)) {
+    throw new Error(
+      "body contains <br/> followed by a non-blank line, which breaks GitHub markdown rendering. always add a blank line after <br/> tags."
+    );
+  }
   const bodyWithoutFooter = stripExistingFooter(fixDoubleEscapedString(body));
-  const footer = await buildCommentFooter({ octokit: ctx.octokit });
+  const footer = await buildCommentFooter({ octokit: ctx.octokit, model: ctx.toolState?.model });
   return `${bodyWithoutFooter}${footer}`;
 }
 
@@ -262,6 +266,7 @@ export async function reportProgress(
     const footer = await buildCommentFooter({
       octokit: ctx.octokit,
       customParts,
+      model: ctx.toolState.model,
     });
     const bodyWithFooter = `${bodyWithoutFooter}${footer}`;
 
@@ -299,6 +304,7 @@ export async function reportProgress(
     const footer = await buildCommentFooter({
       octokit: ctx.octokit,
       customParts,
+      model: ctx.toolState.model,
     });
     const bodyWithFooter = `${bodyWithoutFooter}${footer}`;
 
@@ -359,6 +365,7 @@ export async function reportProgress(
     const footer = await buildCommentFooter({
       octokit: ctx.octokit,
       customParts,
+      model: ctx.toolState.model,
     });
     const bodyWithPlanLink = `${bodyWithoutFooter}${footer}`;
 

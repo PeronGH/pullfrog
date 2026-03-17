@@ -76,6 +76,8 @@ describe("latest model per provider snapshot", async () => {
     }
   }
 
+  // when this fails, a provider shipped a new model. check whether we need
+  // to add or update an alias in models.ts before updating the snapshot.
   it("matches snapshot", () => {
     expect(latestByProvider).toMatchSnapshot();
   });

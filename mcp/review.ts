@@ -264,6 +264,7 @@ async function createAndSubmitWithFooter(
       ? { owner: ctx.repo.owner, repo: ctx.repo.name, runId: ctx.runId, jobId: ctx.jobId }
       : undefined,
     customParts,
+    model: ctx.toolState.model,
   });
 
   return ctx.octokit.rest.pulls.submitReview({

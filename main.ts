@@ -103,6 +103,7 @@ export async function main(): Promise<MainResult> {
 
   // resolve payload to determine shell permission
   const payload = resolvePayload(resolvedPromptInput, runContext.repoSettings);
+  toolState.model = payload.model;
 
   // resolve tokens:
   // - gitToken: contents permission based on push setting (assumed exfiltratable)

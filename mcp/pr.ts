@@ -21,6 +21,7 @@ function buildPrBodyWithFooter(ctx: ToolContext, body: string): string {
     workflowRun: ctx.runId
       ? { owner: ctx.repo.owner, repo: ctx.repo.name, runId: ctx.runId, jobId: ctx.jobId }
       : undefined,
+    model: ctx.toolState.model,
   });
 
   const bodyWithoutFooter = stripExistingFooter(fixDoubleEscapedString(body));

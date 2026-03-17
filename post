@@ -37509,9 +37509,177 @@ function getApiUrl() {
   return raw;
 }
 
+// models.ts
+function provider(config) {
+  return config;
+}
+var providers = {
+  anthropic: provider({
+    displayName: "Anthropic",
+    envVars: ["ANTHROPIC_API_KEY"],
+    models: {
+      "claude-opus": {
+        displayName: "Claude Opus",
+        resolve: "anthropic/claude-opus-4-6",
+        recommended: true
+      },
+      "claude-sonnet": { displayName: "Claude Sonnet", resolve: "anthropic/claude-sonnet-4-6" },
+      "claude-haiku": { displayName: "Claude Haiku", resolve: "anthropic/claude-haiku-4-5" }
+    }
+  }),
+  openai: provider({
+    displayName: "OpenAI",
+    envVars: ["OPENAI_API_KEY"],
+    models: {
+      "gpt-codex": { displayName: "GPT Codex", resolve: "openai/gpt-5.3-codex", recommended: true },
+      "gpt-codex-mini": { displayName: "GPT Codex Mini", resolve: "openai/codex-mini-latest" },
+      o3: { displayName: "O3", resolve: "openai/o3" }
+    }
+  }),
+  google: provider({
+    displayName: "Google",
+    envVars: ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"],
+    models: {
+      "gemini-pro": {
+        displayName: "Gemini Pro",
+        resolve: "google/gemini-3.1-pro-preview",
+        recommended: true
+      },
+      "gemini-flash": { displayName: "Gemini Flash", resolve: "google/gemini-3-flash-preview" }
+    }
+  }),
+  xai: provider({
+    displayName: "xAI",
+    envVars: ["XAI_API_KEY"],
+    models: {
+      grok: { displayName: "Grok", resolve: "xai/grok-4", recommended: true },
+      "grok-fast": { displayName: "Grok Fast", resolve: "xai/grok-4-fast" },
+      "grok-code-fast": { displayName: "Grok Code Fast", resolve: "xai/grok-code-fast-1" }
+    }
+  }),
+  deepseek: provider({
+    displayName: "DeepSeek",
+    envVars: ["DEEPSEEK_API_KEY"],
+    models: {
+      "deepseek-reasoner": {
+        displayName: "DeepSeek Reasoner",
+        resolve: "deepseek/deepseek-reasoner",
+        recommended: true
+      },
+      "deepseek-chat": { displayName: "DeepSeek Chat", resolve: "deepseek/deepseek-chat" }
+    }
+  }),
+  moonshotai: provider({
+    displayName: "Moonshot AI",
+    envVars: ["MOONSHOT_API_KEY"],
+    models: {
+      "kimi-k2": { displayName: "Kimi K2", resolve: "moonshotai/kimi-k2.5", recommended: true }
+    }
+  }),
+  opencode: provider({
+    displayName: "OpenCode",
+    envVars: ["OPENCODE_API_KEY"],
+    models: {
+      "big-pickle": {
+        displayName: "Big Pickle",
+        resolve: "opencode/big-pickle",
+        recommended: true,
+        envVars: [],
+        isFree: true
+      },
+      "claude-opus": { displayName: "Claude Opus", resolve: "opencode/claude-opus-4-6" },
+      "claude-sonnet": { displayName: "Claude Sonnet", resolve: "opencode/claude-sonnet-4-6" },
+      "claude-haiku": { displayName: "Claude Haiku", resolve: "opencode/claude-haiku-4-5" },
+      "gpt-codex": { displayName: "GPT Codex", resolve: "opencode/gpt-5.3-codex" },
+      "gpt-codex-mini": { displayName: "GPT Codex Mini", resolve: "opencode/gpt-5.1-codex-mini" },
+      "gemini-pro": { displayName: "Gemini Pro", resolve: "opencode/gemini-3.1-pro" },
+      "gemini-flash": { displayName: "Gemini Flash", resolve: "opencode/gemini-3-flash" },
+      "kimi-k2": { displayName: "Kimi K2", resolve: "opencode/kimi-k2.5" },
+      "gpt-5-nano": {
+        displayName: "GPT Nano",
+        resolve: "opencode/gpt-5-nano",
+        envVars: [],
+        isFree: true
+      },
+      "mimo-v2-flash-free": {
+        displayName: "MiMo V2 Flash",
+        resolve: "opencode/mimo-v2-flash-free",
+        envVars: [],
+        isFree: true
+      },
+      "minimax-m2.5-free": {
+        displayName: "MiniMax M2.5",
+        resolve: "opencode/minimax-m2.5-free",
+        envVars: [],
+        isFree: true
+      },
+      "nemotron-3-super-free": {
+        displayName: "Nemotron 3 Super",
+        resolve: "opencode/nemotron-3-super-free",
+        envVars: [],
+        isFree: true
+      }
+    }
+  }),
+  openrouter: provider({
+    displayName: "OpenRouter",
+    envVars: ["OPENROUTER_API_KEY"],
+    models: {
+      "claude-opus": {
+        displayName: "Claude Opus",
+        resolve: "openrouter/anthropic/claude-opus-4.6",
+        recommended: true
+      },
+      "claude-sonnet": {
+        displayName: "Claude Sonnet",
+        resolve: "openrouter/anthropic/claude-sonnet-4.6"
+      },
+      "claude-haiku": {
+        displayName: "Claude Haiku",
+        resolve: "openrouter/anthropic/claude-haiku-4.5"
+      },
+      "gpt-codex": { displayName: "GPT Codex", resolve: "openrouter/openai/gpt-5.3-codex" },
+      "gpt-codex-mini": {
+        displayName: "GPT Codex Mini",
+        resolve: "openrouter/openai/gpt-5.1-codex-mini"
+      },
+      "o4-mini": { displayName: "O4 Mini", resolve: "openrouter/openai/o4-mini" },
+      "gemini-pro": {
+        displayName: "Gemini Pro",
+        resolve: "openrouter/google/gemini-3.1-pro-preview"
+      },
+      "gemini-flash": {
+        displayName: "Gemini Flash",
+        resolve: "openrouter/google/gemini-3-flash-preview"
+      },
+      grok: { displayName: "Grok", resolve: "openrouter/x-ai/grok-4" },
+      "deepseek-chat": {
+        displayName: "DeepSeek Chat",
+        resolve: "openrouter/deepseek/deepseek-chat-v3.1"
+      },
+      "kimi-k2": { displayName: "Kimi K2", resolve: "openrouter/moonshotai/kimi-k2.5" }
+    }
+  })
+};
+var modelAliases = Object.entries(providers).flatMap(
+  ([providerKey, config]) => Object.entries(config.models).map(([modelId, def]) => ({
+    slug: `${providerKey}/${modelId}`,
+    provider: providerKey,
+    displayName: def.displayName,
+    resolve: def.resolve,
+    recommended: def.recommended ?? false,
+    isFree: def.isFree ?? false
+  }))
+);
+
 // utils/buildPullfrogFooter.ts
 var PULLFROG_DIVIDER = "<!-- PULLFROG_DIVIDER_DO_NOT_REMOVE_PLZ -->";
 var FROG_LOGO = `<a href="https://pullfrog.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://pullfrog.com/logos/frog-white-full-18px.png"><img src="https://pullfrog.com/logos/frog-green-full-18px.png" width="9px" height="9px" style="vertical-align: middle; " alt="Pullfrog"></picture></a>`;
+function formatModelLabel(slug) {
+  const alias = modelAliases.find((a) => a.slug === slug);
+  if (!alias) return `\`${slug}\``;
+  return alias.isFree ? `\`${alias.displayName}\` (free)` : `\`${alias.displayName}\``;
+}
 function buildPullfrogFooter(params) {
   const parts = [];
   if (params.customParts) {
@@ -37527,11 +37695,10 @@ function buildPullfrogFooter(params) {
   if (params.triggeredBy) {
     parts.push("Triggered by [Pullfrog](https://pullfrog.com)");
   }
-  const allParts = [
-    ...parts,
-    "[pullfrog.com](https://pullfrog.com)",
-    "[\u{1D54F}](https://x.com/pullfrogai)"
-  ];
+  if (params.model) {
+    parts.push(`Using ${formatModelLabel(params.model)}`);
+  }
+  const allParts = [...parts, "[\u{1D54F}](https://x.com/pullfrogai)"];
   return `
 ${PULLFROG_DIVIDER}
 <sup>${FROG_LOGO}&nbsp;&nbsp;\uFF5C ${allParts.join(" \uFF5C ")}</sup>`;

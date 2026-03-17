@@ -19,8 +19,8 @@ exports[`latest model per provider snapshot > matches snapshot 1`] = `
     "releaseDate": "2026-01",
   },
   "openai": {
-    "modelId": "gpt-5.4-pro",
-    "releaseDate": "2026-03-05",
+    "modelId": "gpt-5.4-nano",
+    "releaseDate": "2026-03-17",
   },
   "opencode": {
     "modelId": "nemotron-3-super-free",

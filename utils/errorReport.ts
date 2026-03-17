@@ -36,6 +36,7 @@ export async function reportErrorToComment(ctx: ReportErrorParams): Promise<void
     triggeredBy: true,
     workflowRun: runId ? { owner: repoContext.owner, repo: repoContext.name, runId } : undefined,
     customParts,
+    model: ctx.toolState.model,
   });
 
   await octokit.rest.issues.updateComment({

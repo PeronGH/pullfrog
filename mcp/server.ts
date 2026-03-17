@@ -89,6 +89,7 @@ export interface ToolState {
   existingSummaryCommentId?: number;
   output?: string;
   usageEntries: AgentUsage[];
+  model?: string | undefined;
 }
 
 interface InitToolStateParams {

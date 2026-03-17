@@ -1,3 +1,5 @@
+import { modelAliases } from "../models.ts";
+
 export const PULLFROG_DIVIDER = "<!-- PULLFROG_DIVIDER_DO_NOT_REMOVE_PLZ -->";
 
 const FROG_LOGO = `<a href="https://pullfrog.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://pullfrog.com/logos/frog-white-full-18px.png"><img src="https://pullfrog.com/logos/frog-green-full-18px.png" width="9px" height="9px" style="vertical-align: middle; " alt="Pullfrog"></picture></a>`;
@@ -18,13 +20,21 @@ export interface BuildPullfrogFooterParams {
   /** alternative: just pass a pre-built URL directly (for shortlinks etc.) */
   workflowRunUrl?: string | undefined;
   /** arbitrary custom parts (e.g., action links) */
-  customParts?: string[];
+  customParts?: string[] | undefined;
+  /** model slug from payload (e.g., "anthropic/claude-opus"). shown in footer as "Using `Model Name`" */
+  model?: string | undefined;
+}
+
+function formatModelLabel(slug: string): string {
+  const alias = modelAliases.find((a) => a.slug === slug);
+  if (!alias) return `\`${slug}\``;
+  return alias.isFree ? `\`${alias.displayName}\` (free)` : `\`${alias.displayName}\``;
 }
 
 /**
  * build a pullfrog footer with configurable parts
- * always includes: frog logo at start, pullfrog.com link and X link at end
- * order: action links (customParts) > workflow run > attribution > reference links
+ * always includes: frog logo at start and X link at end
+ * order: action links (customParts) > workflow run > model > attribution > reference links
  */
 export function buildPullfrogFooter(params: BuildPullfrogFooterParams): string {
   const parts: string[] = [];
@@ -45,11 +55,11 @@ export function buildPullfrogFooter(params: BuildPullfrogFooterParams): string {
     parts.push("Triggered by [Pullfrog](https://pullfrog.com)");
   }
 
-  const allParts = [
-    ...parts,
-    "[pullfrog.com](https://pullfrog.com)",
-    "[𝕏](https://x.com/pullfrogai)",
-  ];
+  if (params.model) {
+    parts.push(`Using ${formatModelLabel(params.model)}`);
+  }
+
+  const allParts = [...parts, "[𝕏](https://x.com/pullfrogai)"];
 
   return `
 ${PULLFROG_DIVIDER}
