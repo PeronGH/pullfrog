@@ -20,7 +20,9 @@ to fix this, add the required secret to your GitHub repository:
 4. set the value to your API key
 5. click "Add secret"
 
-configure your model at ${settingsUrl}`;
+configure your model at ${settingsUrl}
+
+for full setup instructions, see https://docs.pullfrog.com/keys`;
 }
 
 function hasEnvVar(name: string): boolean {
