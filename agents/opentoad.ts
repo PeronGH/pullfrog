@@ -330,7 +330,7 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
   function buildUsage(): AgentUsage | undefined {
     return accumulatedTokens.input > 0 || accumulatedTokens.output > 0
       ? {
-          agent: "opentoad",
+          agent: "pullfrog",
           inputTokens: accumulatedTokens.input,
           outputTokens: accumulatedTokens.output,
         }
@@ -696,11 +696,11 @@ export const opentoad = agent({
 
     const repoDir = process.cwd();
 
-    log.debug(`» starting OpenToad (OpenCode): ${cliPath} ${args.join(" ")}`);
+    log.debug(`» starting Pullfrog (OpenCode): ${cliPath} ${args.join(" ")}`);
     log.debug(`» working directory: ${repoDir}`);
 
     return runOpenCode({
-      label: "OpenToad",
+      label: "Pullfrog",
       cliPath,
       args,
       cwd: repoDir,
