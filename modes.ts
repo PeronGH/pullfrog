@@ -134,12 +134,9 @@ ${permalinkTip}
         "Re-review a PR after new commits are pushed; focus on new changes since the last review",
       prompt: `Follow these steps to incrementally re-review the PR after new commits were pushed. Focus on what changed since the last review.
 
-1. **CHECKOUT** - Call ${ghPullfrogMcpName}/checkout_pr with the PR number. This gives you the full PR diff via \`diffPath\`.
+1. **CHECKOUT** - Call ${ghPullfrogMcpName}/checkout_pr with the PR number. This returns \`diffPath\` (full PR diff) and \`incrementalDiffPath\` (changes since last reviewed version, if available).
 
-2. **INCREMENTAL DIFF** - EVENT DATA contains \`before_sha\` (the HEAD before this push). Generate the incremental diff:
-   \`git diff <before_sha>...HEAD\`
-   This shows the changes introduced by this push. Cross-reference with previous reviews (step 3) to confirm coverage of all unreviewed changes — the full PR diff fills any gaps.
-   **If the diff command fails** (e.g., force-push rewrote history), fall back to reviewing the full PR diff from step 1.
+2. **INCREMENTAL DIFF** - If \`incrementalDiffPath\` is present, read it to see what changed since the last review. This is a range-diff that isolates only the net changes, filtering out base branch noise. If not present, fall back to reviewing the full PR diff.
 
 3. **FETCH PREVIOUS REVIEWS** - Use ${ghPullfrogMcpName}/list_pull_request_reviews to find previous Pullfrog reviews. For the most recent one, call ${ghPullfrogMcpName}/get_review_comments with the review ID to see specific line-level feedback. This lets you understand what feedback was already given.
 

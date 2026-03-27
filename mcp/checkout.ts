@@ -5,6 +5,7 @@ import { type } from "arktype";
 import { log } from "../utils/cli.ts";
 import { $git } from "../utils/gitAuth.ts";
 import { executeLifecycleHook } from "../utils/lifecycle.ts";
+import { computeIncrementalDiff } from "../utils/rangeDiff.ts";
 import { $ } from "../utils/shell.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
@@ -139,6 +140,7 @@ export type CheckoutPrResult = {
   url: string;
   headRepo: string;
   diffPath: string;
+  incrementalDiffPath?: string | undefined;
   toc: string;
   instructions: string;
 };
@@ -166,135 +168,236 @@ export async function fetchAndFormatPrDiff(params: FetchPrDiffParams): Promise<F
 
 import type { GitContext } from "../utils/setup.ts";
 
-type CheckoutPrBranchParams = GitContext;
+export type PrData = {
+  number: number;
+  headSha: string;
+  headRef: string;
+  headRepoFullName: string;
+  baseRef: string;
+  baseRepoFullName: string;
+  maintainerCanModify: boolean;
+};
 
-interface CheckoutPrBranchResult {
-  prNumber: number;
-  isFork: boolean;
-  forkUrl?: string | undefined; // only set when isFork is true
+type EnsureBeforeShaParams = {
+  sha: string;
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  gitToken: string;
+  isShallow: boolean;
+};
+
+type CreateTempBranchParams = {
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  ref: string;
+  sha: string;
+};
+
+async function createTempBranch(params: CreateTempBranchParams) {
+  const response = await params.octokit.rest.git.createRef({
+    owner: params.owner,
+    repo: params.repo,
+    ref: `refs/heads/${params.ref}`,
+    sha: params.sha,
+  });
+  return {
+    data: response.data,
+    async [Symbol.asyncDispose]() {
+      try {
+        await params.octokit.rest.git.deleteRef({
+          owner: params.owner,
+          repo: params.repo,
+          ref: `heads/${params.ref}`,
+        });
+        log.debug(`» deleted temp branch ${params.ref}`);
+      } catch (e) {
+        log.debug(
+          `» failed to delete temp branch ${params.ref}: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    },
+  };
 }
+
+async function ensureBeforeShaReachable(params: EnsureBeforeShaParams): Promise<boolean> {
+  try {
+    $("git", ["cat-file", "-t", params.sha], { log: false });
+    log.debug(`» before_sha ${params.sha.slice(0, 7)} is reachable`);
+    return true;
+  } catch {
+    // not available locally — create a temporary branch to fetch it
+  }
+
+  const tempBranch = `pullfrog/tmp/${params.sha.slice(0, 12)}`;
+  try {
+    log.debug(`» before_sha ${params.sha.slice(0, 7)} not reachable, creating temp branch...`);
+    await using _ref = await createTempBranch({
+      octokit: params.octokit,
+      owner: params.owner,
+      repo: params.repo,
+      sha: params.sha,
+      ref: tempBranch,
+    });
+    await $git(
+      "fetch",
+      ["--no-tags", ...(params.isShallow ? ["--depth=1"] : []), "origin", tempBranch],
+      { token: params.gitToken }
+    );
+    log.debug(`» fetched before_sha via temp branch ${tempBranch}`);
+    return true;
+  } catch (e) {
+    log.debug(`» failed to fetch before_sha: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+type CheckoutPrBranchParams = GitContext & {
+  beforeSha?: string | undefined;
+};
 
 /**
  * Shared helper to checkout a PR branch and configure fork remotes.
  * Assumes origin remote is already configured with authentication.
- * Updates toolState.issueNumber and toolState.pushUrl (for fork PRs).
+ * Updates toolState.issueNumber, toolState.checkoutSha, and toolState.pushUrl (for fork PRs).
  */
-export async function checkoutPrBranch(
-  pullNumber: number,
-  params: CheckoutPrBranchParams
-): Promise<CheckoutPrBranchResult> {
-  const { octokit, owner, name, gitToken, toolState } = params;
-  log.info(`» checking out PR #${pullNumber}...`);
+export async function checkoutPrBranch(pr: PrData, params: CheckoutPrBranchParams): Promise<void> {
+  const { octokit, owner, name, gitToken, toolState, beforeSha } = params;
+  log.info(`» checking out PR #${pr.number}...`);
 
-  // fetch PR metadata
-  const pr = await octokit.rest.pulls.get({
-    owner,
-    repo: name,
-    pull_number: pullNumber,
-  });
-
-  const headRepo = pr.data.head.repo;
-  if (!headRepo) {
-    throw new Error(`PR #${pullNumber} source repository was deleted`);
-  }
-
-  const isFork = headRepo.full_name !== pr.data.base.repo.full_name;
-  const baseBranch = pr.data.base.ref;
-  const headBranch = pr.data.head.ref;
+  const isFork = pr.headRepoFullName !== pr.baseRepoFullName;
 
   // always use pr-{number} as local branch name for consistency
   // this avoids naming conflicts and makes push config simpler
-  const localBranch = `pr-${pullNumber}`;
+  const localBranch = `pr-${pr.number}`;
 
-  // compute deepen depth for shallow clones. actions/checkout uses depth=1
-  // by default, which breaks rebase/log because git can't find the merge base.
-  // use the GitHub compare API to fetch exactly enough history.
   const isShallow =
     $("git", ["rev-parse", "--is-shallow-repository"], { log: false }).trim() === "true";
-  let deepenArgs: string[] = [];
-  if (isShallow) {
-    let depth = 1000; // fallback
-    try {
-      const comparison = await octokit.rest.repos.compareCommits({
-        owner,
-        repo: name,
-        base: baseBranch,
-        head: `pull/${pullNumber}/head`,
-      });
-      depth = comparison.data.behind_by + 10;
-      log.debug(
-        `» PR is ${comparison.data.behind_by} commits behind ${baseBranch}, deepening by ${depth}`
-      );
-    } catch {
-      log.debug(`» compare API failed, falling back to --deepen=${depth}`);
-    }
-    deepenArgs = [`--deepen=${depth}`];
-  }
 
-  // check if we're already on the correct commit (not just branch name)
-  // this handles fork PRs where head branch name might match base branch name
-  const currentSha = $("git", ["rev-parse", "HEAD"], { log: false }).trim();
-  const alreadyOnBranch = currentSha === pr.data.head.sha;
+  toolState.checkoutSha = $("git", ["rev-parse", "HEAD"], { log: false }).trim();
+  const alreadyOnBranch = toolState.checkoutSha === pr.headSha;
 
-  if (alreadyOnBranch) {
-    log.debug(`already on PR branch ${localBranch}, skipping checkout`);
-  } else {
-    // fetch base branch so origin/<base> exists for diff operations
-    log.debug(`» fetching base branch (${baseBranch})...`);
-    await $git("fetch", [...deepenArgs, "--no-tags", "origin", baseBranch], {
-      token: gitToken,
-    });
+  // fetch base branch so origin/<base> exists for diff operations
+  log.debug(`» fetching base branch (${pr.baseRef})...`);
+  await $git("fetch", ["--no-tags", "origin", pr.baseRef], { token: gitToken });
 
+  // alreadyOnBranch only matches for repeated checkout_pr calls for the same PR in one session
+  // (without the tip moving), or if an external setup already checked out the PR head.
+  // normal PR-triggered runs won't match here — actions/checkout lands on a synthesized
+  // merge commit whose SHA differs from pr.headSha.
+  //
+  // so the fetch+checkout block below will almost always execute, and the fetched HEAD
+  // might differ from pr.headSha. toolState.checkoutSha is set after to capture the actual SHA.
+  if (!alreadyOnBranch) {
     // checkout base branch first to avoid "refusing to fetch into current branch" error
     // -B creates or resets the branch to match origin/baseBranch
-    $("git", ["checkout", "-B", baseBranch, `origin/${baseBranch}`], { log: false });
+    $("git", ["checkout", "-B", pr.baseRef, `origin/${pr.baseRef}`], { log: false });
 
     // fetch PR branch using pull/{n}/head refspec (works for both fork and same-repo PRs)
-    log.debug(`» fetching PR #${pullNumber} (${localBranch})...`);
-    await $git("fetch", ["--no-tags", "origin", `pull/${pullNumber}/head:${localBranch}`], {
+    log.debug(`» fetching PR #${pr.number} (${localBranch})...`);
+    await $git("fetch", ["--no-tags", "origin", `pull/${pr.number}/head:${localBranch}`], {
       token: gitToken,
     });
 
     // checkout the branch
     $("git", ["checkout", localBranch], { log: false });
-    log.debug(`» checked out PR #${pullNumber}`);
+    log.debug(`» checked out PR #${pr.number}`);
+    // make sure toolState.checkoutSha is set to the actual checked-out SHA (which might be different from pr.headSha)
+    toolState.checkoutSha = $("git", ["rev-parse", "HEAD"], { log: false }).trim();
   }
 
-  // ensure base branch is fetched (needed for diff operations)
-  // fetch if we skipped checkout (already on branch) - otherwise already fetched above
-  if (alreadyOnBranch) {
-    log.debug(`» fetching base branch (${baseBranch})...`);
-    await $git("fetch", [...deepenArgs, "--no-tags", "origin", baseBranch], {
-      token: gitToken,
-    });
+  const beforeShaReachable = beforeSha
+    ? await ensureBeforeShaReachable({
+        sha: beforeSha,
+        octokit,
+        owner,
+        repo: name,
+        gitToken,
+        isShallow,
+      })
+    : false;
+
+  // compute deepen depth for shallow clones. actions/checkout uses depth=1
+  // by default, which breaks rebase/log because git can't find the merge base.
+  // use the GitHub compare API to fetch exactly enough history.
+  // computed after checkout so compareCommits uses the actual checked-out SHA.
+  if (isShallow) {
+    let deepenDepth = 0;
+    try {
+      // ahead_by = PR commits past merge base, behind_by = base commits past merge base.
+      // --deepen extends ALL shallow roots equally (can't deepen a single branch),
+      // so we need the max across both the PR head and before_sha to ensure all
+      // three points (base, head, before_sha) reach the merge base in a single deepen call.
+      const [prComparison, beforeShaComparison] = await Promise.all([
+        octokit.rest.repos.compareCommits({
+          owner,
+          repo: name,
+          base: pr.baseRef,
+          head: toolState.checkoutSha,
+        }),
+        beforeSha && beforeShaReachable
+          ? octokit.rest.repos.compareCommits({
+              owner,
+              repo: name,
+              base: pr.baseRef,
+              head: beforeSha,
+            })
+          : undefined,
+      ]);
+      deepenDepth =
+        Math.max(
+          prComparison.data.ahead_by,
+          prComparison.data.behind_by,
+          beforeShaComparison?.data.ahead_by ?? 0,
+          beforeShaComparison?.data.behind_by ?? 0
+        ) + 10;
+      log.debug(
+        `» PR: ${prComparison.data.ahead_by} ahead / ${prComparison.data.behind_by} behind` +
+          (beforeShaComparison
+            ? `, before_sha: ${beforeShaComparison.data.ahead_by} ahead / ${beforeShaComparison.data.behind_by} behind`
+            : "") +
+          `, deepen by ${deepenDepth}`
+      );
+    } catch {
+      deepenDepth = 1000;
+      log.debug(`» compare API failed, falling back to --deepen=${deepenDepth}`);
+    }
+    // deepen after both branches are fetched so the merge base is reachable from both sides
+    if (deepenDepth) {
+      log.debug(`» deepening by ${deepenDepth} to reach merge base...`);
+      await $git("fetch", [`--deepen=${deepenDepth}`, "--no-tags", "origin"], {
+        token: gitToken,
+      });
+    }
   }
 
   // configure push remote for this branch
   // NOTE: This always runs regardless of alreadyOnBranch, because setupGit doesn't configure
   // fork remotes. This ensures fork PRs can push even when checkout_pr is called after setupGit.
   if (isFork) {
-    const remoteName = `pr-${pullNumber}`;
+    const remoteName = `pr-${pr.number}`;
     // SECURITY: fork URL without token - auth is injected via GIT_ASKPASS in $git()
-    const forkUrl = `https://github.com/${headRepo.full_name}.git`;
+    const forkUrl = `https://github.com/${pr.headRepoFullName}.git`;
 
     // add fork as a named remote (suppress logging to avoid "error: remote already exists" spam)
     try {
       $("git", ["remote", "add", remoteName, forkUrl], { log: false });
-      log.debug(`» added remote '${remoteName}' for fork ${headRepo.full_name}`);
+      log.debug(`» added remote '${remoteName}' for fork ${pr.headRepoFullName}`);
     } catch {
       // remote already exists, update its URL
       $("git", ["remote", "set-url", remoteName, forkUrl], { log: false });
-      log.debug(`» updated remote '${remoteName}' for fork ${headRepo.full_name}`);
+      log.debug(`» updated remote '${remoteName}' for fork ${pr.headRepoFullName}`);
     }
 
     // set branch push config so `git push` knows where to push
     $("git", ["config", `branch.${localBranch}.pushRemote`, remoteName], { log: false });
     // set merge ref so git knows the remote branch name (may differ from local)
-    $("git", ["config", `branch.${localBranch}.merge`, `refs/heads/${headBranch}`], { log: false });
-    log.debug(`» configured branch '${localBranch}' to push to '${remoteName}/${headBranch}'`);
+    $("git", ["config", `branch.${localBranch}.merge`, `refs/heads/${pr.headRef}`], { log: false });
+    log.debug(`» configured branch '${localBranch}' to push to '${remoteName}/${pr.headRef}'`);
 
     // warn if maintainer can't modify (push will likely fail)
-    if (!pr.data.maintainer_can_modify) {
+    if (!pr.maintainerCanModify) {
       log.warning(
         `» fork PR has maintainer_can_modify=false - push operations will fail. ` +
           `ask the PR author to enable "Allow edits from maintainers" or the fork may be owned by an organization.`
@@ -303,21 +406,21 @@ export async function checkoutPrBranch(
   } else {
     // for same-repo PRs, push to origin
     $("git", ["config", `branch.${localBranch}.pushRemote`, "origin"], { log: false });
-    $("git", ["config", `branch.${localBranch}.merge`, `refs/heads/${headBranch}`], { log: false });
+    $("git", ["config", `branch.${localBranch}.merge`, `refs/heads/${pr.headRef}`], { log: false });
   }
 
   // update toolState
-  toolState.issueNumber = pullNumber;
+  toolState.issueNumber = pr.number;
   if (isFork) {
-    toolState.pushUrl = `https://github.com/${headRepo.full_name}.git`;
+    toolState.pushUrl = `https://github.com/${pr.headRepoFullName}.git`;
   }
 
   // store push destination so push_branch can use it directly
   // git config is the primary mechanism, but toolState serves as a reliable fallback
   // in case git config reads fail in certain environments
   toolState.pushDest = {
-    remoteName: isFork ? `pr-${pullNumber}` : "origin",
-    remoteBranch: headBranch,
+    remoteName: isFork ? `pr-${pr.number}` : "origin",
+    remoteBranch: pr.headRef,
     localBranch,
   };
 
@@ -326,50 +429,6 @@ export async function checkoutPrBranch(
     event: "post-checkout",
     script: params.postCheckoutScript,
   });
-
-  return {
-    prNumber: pullNumber,
-    isFork,
-    forkUrl: isFork ? `https://github.com/${headRepo.full_name}.git` : undefined,
-  };
-}
-
-type DeepenForBeforeShaParams = {
-  gitToken: string;
-  beforeSha: string;
-};
-
-function deepenForBeforeSha(params: DeepenForBeforeShaParams): void {
-  const isShallow =
-    $("git", ["rev-parse", "--is-shallow-repository"], { log: false }).trim() === "true";
-  if (!isShallow) return;
-
-  const maxIterations = 10;
-  for (let i = 0; i < maxIterations; i++) {
-    try {
-      $("git", ["cat-file", "-t", params.beforeSha], { log: false });
-      log.debug(`» before_sha ${params.beforeSha.slice(0, 7)} is now reachable`);
-      return;
-    } catch {
-      // not reachable yet, deepen
-    }
-
-    log.debug(
-      `» deepening by 50 to reach before_sha ${params.beforeSha.slice(0, 7)} (attempt ${i + 1}/${maxIterations})`
-    );
-    try {
-      $git("fetch", ["--deepen=50", "--no-tags", "origin"], {
-        token: params.gitToken,
-      });
-    } catch {
-      log.debug(`» deepen for before_sha failed (force-push may have rewritten history)`);
-      return;
-    }
-  }
-
-  log.debug(
-    `» before_sha ${params.beforeSha.slice(0, 7)} not reachable after ${maxIterations * 50} commits`
-  );
 }
 
 export function CheckoutPrTool(ctx: ToolContext) {
@@ -380,7 +439,28 @@ export function CheckoutPrTool(ctx: ToolContext) {
       "Returns diffPath pointing to the formatted diff file.",
     parameters: CheckoutPr,
     execute: execute(async ({ pull_number }) => {
-      await checkoutPrBranch(pull_number, {
+      const prResponse = await ctx.octokit.rest.pulls.get({
+        owner: ctx.repo.owner,
+        repo: ctx.repo.name,
+        pull_number,
+      });
+
+      const headRepo = prResponse.data.head.repo;
+      if (!headRepo) {
+        throw new Error(`PR #${pull_number} source repository was deleted`);
+      }
+
+      const pr: PrData = {
+        number: pull_number,
+        headSha: prResponse.data.head.sha,
+        headRef: prResponse.data.head.ref,
+        headRepoFullName: headRepo.full_name,
+        baseRef: prResponse.data.base.ref,
+        baseRepoFullName: prResponse.data.base.repo.full_name,
+        maintainerCanModify: prResponse.data.maintainer_can_modify,
+      };
+
+      await checkoutPrBranch(pr, {
         octokit: ctx.octokit,
         owner: ctx.repo.owner,
         name: ctx.repo.name,
@@ -388,30 +468,38 @@ export function CheckoutPrTool(ctx: ToolContext) {
         toolState: ctx.toolState,
         shell: ctx.payload.shell,
         postCheckoutScript: ctx.postCheckoutScript,
+        beforeSha: ctx.toolState.beforeSha,
       });
 
-      // for incremental review/rereview: deepen the clone to include before_sha
-      // so `git diff before_sha...HEAD` works without the agent needing to fetch manually
-      const event = ctx.payload.event;
-      if ("before_sha" in event && event.before_sha) {
-        deepenForBeforeSha({
-          gitToken: ctx.gitToken,
-          beforeSha: event.before_sha,
+      const tempDir = process.env.PULLFROG_TEMP_DIR;
+      if (!tempDir) {
+        throw new Error(
+          "PULLFROG_TEMP_DIR not set - checkout_pr must run in pullfrog action context"
+        );
+      }
+
+      const headShort = ctx.toolState.checkoutSha!.slice(0, 7);
+
+      // compute incremental diff if we have a beforeSha to compare against
+      let incrementalDiffPath: string | undefined;
+      if (ctx.toolState.beforeSha && ctx.toolState.checkoutSha) {
+        const beforeShort = ctx.toolState.beforeSha.slice(0, 7);
+        const incremental = computeIncrementalDiff({
+          baseBranch: pr.baseRef,
+          beforeSha: ctx.toolState.beforeSha,
+          headSha: ctx.toolState.checkoutSha,
         });
+        if (incremental) {
+          incrementalDiffPath = join(
+            tempDir,
+            `pr-${pull_number}-${beforeShort}-${headShort}-incremental.diff`
+          );
+          writeFileSync(incrementalDiffPath, incremental);
+          log.info(
+            `» incremental diff computed (${incremental.length} bytes) → ${incrementalDiffPath}`
+          );
+        }
       }
-
-      const pr = await ctx.octokit.rest.pulls.get({
-        owner: ctx.repo.owner,
-        repo: ctx.repo.name,
-        pull_number,
-      });
-
-      const headRepo = pr.data.head.repo;
-      if (!headRepo) {
-        throw new Error(`PR #${pull_number} source repository was deleted`);
-      }
-
-      ctx.toolState.checkoutSha = pr.data.head.sha;
 
       // fetch PR files and format with line numbers
       const formatResult = await fetchAndFormatPrDiff({
@@ -422,28 +510,29 @@ export function CheckoutPrTool(ctx: ToolContext) {
       });
       const diffPreview = formatResult.content.split("\n").slice(0, 100).join("\n");
       log.debug(`formatted diff preview (first 100 lines):\n${diffPreview}`);
-      const tempDir = process.env.PULLFROG_TEMP_DIR;
-      if (!tempDir) {
-        throw new Error(
-          "PULLFROG_TEMP_DIR not set - checkout_pr must run in pullfrog action context"
-        );
-      }
-      const diffPath = join(tempDir, `pr-${pull_number}.diff`);
+      const diffPath = join(tempDir, `pr-${pull_number}-${headShort}.diff`);
       writeFileSync(diffPath, formatResult.content);
       log.debug(`wrote diff to ${diffPath} (${formatResult.content.length} bytes)`);
 
+      const incrementalInstructions = incrementalDiffPath
+        ? ` IMPORTANT: incrementalDiffPath contains ONLY the changes since the last reviewed version ` +
+          `(computed via range-diff). you MUST read incrementalDiffPath FIRST to understand what changed, ` +
+          `then use diffPath for full PR context. do NOT skip the incremental diff.`
+        : "";
+
       return {
         success: true,
-        number: pr.data.number,
-        title: pr.data.title,
-        base: pr.data.base.ref,
+        number: prResponse.data.number,
+        title: prResponse.data.title,
+        base: pr.baseRef,
         localBranch: `pr-${pull_number}`,
-        remoteBranch: `refs/heads/${pr.data.head.ref}`,
-        isFork: headRepo.full_name !== pr.data.base.repo.full_name,
-        maintainerCanModify: pr.data.maintainer_can_modify,
-        url: pr.data.html_url,
-        headRepo: headRepo.full_name,
+        remoteBranch: `refs/heads/${pr.headRef}`,
+        isFork: pr.headRepoFullName !== pr.baseRepoFullName,
+        maintainerCanModify: pr.maintainerCanModify,
+        url: prResponse.data.html_url,
+        headRepo: pr.headRepoFullName,
         diffPath,
+        incrementalDiffPath,
         toc: formatResult.toc,
         instructions:
           `the diff file at diffPath contains a table of contents (TOC) at the top listing every changed file with its line range. ` +
@@ -451,7 +540,8 @@ export function CheckoutPrTool(ctx: ToolContext) {
           `for example, if the TOC says "src/foo.ts → lines 5-42", read lines 5-42 from diffPath to see that file's changes. ` +
           `review files selectively based on relevance rather than reading everything sequentially. ` +
           `the local branch is 'localBranch' (pr-{number}), not the remote branch name. ` +
-          `when pushing, omit branchName to use the current branch. do not use remoteBranch as a local branch name.`,
+          `when pushing, omit branchName to use the current branch. do not use remoteBranch as a local branch name.` +
+          incrementalInstructions,
       } satisfies CheckoutPrResult;
     }),
   });

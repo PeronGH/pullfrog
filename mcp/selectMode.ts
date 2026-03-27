@@ -117,9 +117,9 @@ ${learningsStep(6)}`,
 
   IncrementalReview: `### Checklist
 
-1. Checkout the PR via \`${ghPullfrogMcpName}/checkout_pr\` — this returns PR metadata and a \`diffPath\`. Read the diff to identify the major areas of change.
+1. Checkout the PR via \`${ghPullfrogMcpName}/checkout_pr\` — this returns PR metadata, \`diffPath\` (full diff), and \`incrementalDiffPath\` (changes since last reviewed version, if available).
 
-2. Generate the incremental diff using the \`before_sha\` from EVENT DATA: \`git diff <before_sha>...HEAD\`. This isolates only the new commits. If the command fails (e.g., force-push rewrote history), fall back to reviewing the full PR diff.
+2. If \`incrementalDiffPath\` is present, read it to see what changed since the last review. This is a range-diff that isolates the net changes, filtering out base branch noise. If not present, fall back to reviewing the full PR diff.
 
 3. Fetch previous reviews via \`${ghPullfrogMcpName}/list_pull_request_reviews\`. For the most recent Pullfrog review, call \`${ghPullfrogMcpName}/get_review_comments\` with the review ID to retrieve specific prior line-level feedback.
 

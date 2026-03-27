@@ -64,7 +64,6 @@ export type SetupGitParams = GitContext;
  * setup git configuration and authentication for the repository.
  * - configures git identity (user.email, user.name)
  * - sets up authentication via gitToken (minimal contents:write)
- * - for PR events, checks out the PR branch using shared helper
  *
  * gitToken is a minimal-permission token (contents + workflows) used for git operations.
  * it is assumed to be potentially exfiltratable, so it has limited scope.

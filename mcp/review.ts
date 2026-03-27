@@ -1,5 +1,6 @@
 import type { RestEndpointMethodTypes } from "@octokit/rest";
 import { type } from "arktype";
+import { ghPullfrogMcpName } from "../external.ts";
 import { apiFetch } from "../utils/apiFetch.ts";
 import { getApiUrl } from "../utils/apiUrl.ts";
 import { buildPullfrogFooter } from "../utils/buildPullfrogFooter.ts";
@@ -208,7 +209,9 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
       ) {
         const fromSha = ctx.toolState.checkoutSha;
         const toSha = latestHeadSha;
-        // advance checkoutSha so the next review submission tracks correctly
+        // store old checkoutSha as beforeSha so the next checkout_pr computes an incremental diff
+        ctx.toolState.beforeSha = fromSha;
+        // advance checkoutSha so the next review submission tracks correctly (just in case, checkout_pr will overwrite it again)
         ctx.toolState.checkoutSha = toSha;
 
         log.info(
@@ -226,10 +229,9 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
             from: fromSha,
             to: toSha,
             instructions:
-              `New commits were pushed while you were reviewing. ` +
-              `Run \`git pull\` to fetch them, then review the incremental diff ` +
-              `with \`git diff ${fromSha}...HEAD\`. Submit another review covering ` +
-              `only the new changes. Do not repeat feedback from your previous review.`,
+              `new commits were pushed while you were reviewing. ` +
+              `call \`${ghPullfrogMcpName}/checkout_pr\` again to fetch the latest version — it will compute the incremental diff automatically. ` +
+              `submit another review covering only the new changes. do not repeat feedback from your previous review.`,
           },
         };
       }

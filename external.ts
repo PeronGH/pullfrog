@@ -212,7 +212,7 @@ interface PullRequestSynchronizeEvent extends BasePayloadEvent {
   title: string;
   body: string | null;
   branch: string;
-  /** SHA before the push -- used to compute incremental diff via `git diff before_sha...HEAD` */
+  /** SHA before the push -- used to compute incremental range-diff between PR versions */
   before_sha: string;
 }
 

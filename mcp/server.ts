@@ -72,6 +72,9 @@ export interface ToolState {
   issueNumber?: number;
   // PR HEAD sha at checkout time — used to detect new commits pushed during a review
   checkoutSha?: string;
+  // SHA to diff incrementally against — set from event payload on first checkout,
+  // then from checkoutSha when review.ts detects new commits mid-review
+  beforeSha?: string;
   selectedMode?: string;
   backgroundProcesses: Map<string, BackgroundProcess>;
   browserDaemon?: BrowserDaemon | undefined;

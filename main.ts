@@ -172,6 +172,9 @@ export async function main(): Promise<MainResult> {
   // resolve payload to determine shell permission
   const payload = resolvePayload(resolvedPromptInput, runContext.repoSettings);
   toolState.model = payload.model;
+  if (payload.event.trigger === "pull_request_synchronize") {
+    toolState.beforeSha = payload.event.before_sha;
+  }
 
   // resolve tokens first — acquireNewToken needs OIDC env vars for token exchange
   await using tokenRef = await resolveTokens({ push: payload.push });
