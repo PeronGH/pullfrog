@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ModelProvider, modelAliases, providers } from "../models.ts";
+import { type ModelProvider, modelAliases, providers, resolveCliModel } from "../models.ts";
 
 type ModelsDevModel = {
   name: string;
@@ -38,10 +38,31 @@ describe("models.dev validity", async () => {
       ).toBeDefined();
     });
 
-    it(`${alias.resolve} is not deprecated`, () => {
-      const model = data[parsed.provider]?.models[parsed.modelId];
-      if (!model) return; // covered by existence test above
-      expect(model.status, `${alias.resolve} is deprecated on models.dev`).not.toBe("deprecated");
+    if (!alias.deprecated) {
+      it(`${alias.resolve} is not deprecated`, () => {
+        const model = data[parsed.provider]?.models[parsed.modelId];
+        if (!model) return; // covered by existence test above
+        expect(model.status, `${alias.resolve} is deprecated on models.dev`).not.toBe("deprecated");
+      });
+    }
+  }
+
+  // deprecated models must have a fallback that resolves to a non-deprecated model
+  const deprecatedAliases = modelAliases.filter((a) => a.deprecated);
+  for (const alias of deprecatedAliases) {
+    it(`${alias.slug} (deprecated) has a fallback`, () => {
+      expect(
+        alias.fallback,
+        `deprecated model "${alias.slug}" is missing a fallback`
+      ).toBeDefined();
+    });
+
+    it(`${alias.slug} (deprecated) fallback chain resolves`, () => {
+      const resolved = resolveCliModel(alias.slug);
+      expect(
+        resolved,
+        `fallback chain for "${alias.slug}" does not resolve to a non-deprecated model`
+      ).toBeDefined();
     });
   }
 });

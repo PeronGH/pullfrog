@@ -13,7 +13,7 @@
  * security is enforced at the tool layer, not the process layer.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { ghPullfrogMcpName } from "../external.ts";
@@ -626,10 +626,6 @@ export const opentoad = agent({
       env: homeEnv,
       agent: "opencode",
     });
-
-    // remove untrusted project plugins/tools before agent starts (no env var to disable loading)
-    rmSync(join(process.cwd(), ".opencode", "plugins"), { recursive: true, force: true });
-    rmSync(join(process.cwd(), ".opencode", "tools"), { recursive: true, force: true });
 
     const args = ["run", ctx.instructions.full, "--format", "json", "--print-logs"];
 

@@ -22,6 +22,10 @@ export interface ModelAlias {
   preferred: boolean;
   /** whether this alias is free and requires no API key */
   isFree: boolean;
+  /** model is deprecated on models.dev — resolve via fallback chain instead */
+  deprecated: boolean;
+  /** slug of another model to resolve to when this one is deprecated */
+  fallback: string | undefined;
 }
 
 interface ModelDef {
@@ -33,6 +37,10 @@ interface ModelDef {
   preferred?: boolean;
   envVars?: readonly string[];
   isFree?: boolean;
+  /** model is deprecated on models.dev — kept for backward compatibility, resolved via fallback */
+  deprecated?: boolean;
+  /** slug of another model to fall back to (e.g. "opencode/nemotron-3-super-free") */
+  fallback?: string;
 }
 
 export interface ProviderConfig {
@@ -221,6 +229,8 @@ export const providers = {
         resolve: "opencode/mimo-v2-pro-free",
         envVars: [],
         isFree: true,
+        deprecated: true,
+        fallback: "opencode/nemotron-3-super-free",
       },
       "minimax-m2.5-free": {
         displayName: "MiniMax M2.5",
@@ -348,6 +358,8 @@ export const modelAliases: ModelAlias[] = Object.entries(providers).flatMap(
       openRouterResolve: def.openRouterResolve,
       preferred: def.preferred ?? false,
       isFree: def.isFree ?? false,
+      deprecated: def.deprecated ?? false,
+      fallback: def.fallback,
     }))
 );
 
@@ -358,7 +370,24 @@ export function resolveModelSlug(slug: string): string | undefined {
   return modelAliases.find((a) => a.slug === slug)?.resolve;
 }
 
-/** resolve a model slug to the CLI-ready model string (full models.dev specifier) */
+const MAX_FALLBACK_DEPTH = 10;
+
+/**
+ * resolve a model slug to the CLI-ready model string, following the fallback
+ * chain when a model is deprecated. returns the first non-deprecated resolve
+ * target, or undefined if the chain is exhausted or broken.
+ */
 export function resolveCliModel(slug: string): string | undefined {
-  return resolveModelSlug(slug);
+  let current = slug;
+  const visited = new Set<string>();
+  for (let i = 0; i < MAX_FALLBACK_DEPTH; i++) {
+    if (visited.has(current)) return undefined;
+    visited.add(current);
+    const alias = modelAliases.find((a) => a.slug === current);
+    if (!alias) return undefined;
+    if (!alias.deprecated) return alias.resolve;
+    if (!alias.fallback) return undefined;
+    current = alias.fallback;
+  }
+  return undefined;
 }
