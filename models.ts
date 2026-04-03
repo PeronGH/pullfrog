@@ -22,9 +22,7 @@ export interface ModelAlias {
   preferred: boolean;
   /** whether this alias is free and requires no API key */
   isFree: boolean;
-  /** model is deprecated on models.dev — resolve via fallback chain instead */
-  deprecated: boolean;
-  /** slug of another model to resolve to when this one is deprecated */
+  /** slug of a replacement model — presence implies this model is deprecated */
   fallback: string | undefined;
 }
 
@@ -37,9 +35,7 @@ interface ModelDef {
   preferred?: boolean;
   envVars?: readonly string[];
   isFree?: boolean;
-  /** model is deprecated on models.dev — kept for backward compatibility, resolved via fallback */
-  deprecated?: boolean;
-  /** slug of another model to fall back to (e.g. "opencode/nemotron-3-super-free") */
+  /** slug of a replacement model — presence implies this model is deprecated */
   fallback?: string;
 }
 
@@ -229,7 +225,6 @@ export const providers = {
         resolve: "opencode/mimo-v2-pro-free",
         envVars: [],
         isFree: true,
-        deprecated: true,
         fallback: "opencode/nemotron-3-super-free",
       },
       "minimax-m2.5-free": {
@@ -358,7 +353,6 @@ export const modelAliases: ModelAlias[] = Object.entries(providers).flatMap(
       openRouterResolve: def.openRouterResolve,
       preferred: def.preferred ?? false,
       isFree: def.isFree ?? false,
-      deprecated: def.deprecated ?? false,
       fallback: def.fallback,
     }))
 );
@@ -385,8 +379,7 @@ export function resolveCliModel(slug: string): string | undefined {
     visited.add(current);
     const alias = modelAliases.find((a) => a.slug === current);
     if (!alias) return undefined;
-    if (!alias.deprecated) return alias.resolve;
-    if (!alias.fallback) return undefined;
+    if (!alias.fallback) return alias.resolve;
     current = alias.fallback;
   }
   return undefined;

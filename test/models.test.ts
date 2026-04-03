@@ -38,7 +38,7 @@ describe("models.dev validity", async () => {
       ).toBeDefined();
     });
 
-    if (!alias.deprecated) {
+    if (!alias.fallback) {
       it(`${alias.resolve} is not deprecated`, () => {
         const model = data[parsed.provider]?.models[parsed.modelId];
         if (!model) return; // covered by existence test above
@@ -47,17 +47,8 @@ describe("models.dev validity", async () => {
     }
   }
 
-  // deprecated models must have a fallback that resolves to a non-deprecated model
-  const deprecatedAliases = modelAliases.filter((a) => a.deprecated);
-  for (const alias of deprecatedAliases) {
-    it(`${alias.slug} (deprecated) has a fallback`, () => {
-      expect(
-        alias.fallback,
-        `deprecated model "${alias.slug}" is missing a fallback`
-      ).toBeDefined();
-    });
-
-    it(`${alias.slug} (deprecated) fallback chain resolves`, () => {
+  for (const alias of modelAliases.filter((a) => a.fallback)) {
+    it(`${alias.slug} fallback chain resolves to a non-deprecated model`, () => {
       const resolved = resolveCliModel(alias.slug);
       expect(
         resolved,

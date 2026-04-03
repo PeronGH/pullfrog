@@ -37687,7 +37687,6 @@ var providers = {
         resolve: "opencode/mimo-v2-pro-free",
         envVars: [],
         isFree: true,
-        deprecated: true,
         fallback: "opencode/nemotron-3-super-free"
       },
       "minimax-m2.5-free": {
@@ -37776,7 +37775,6 @@ var modelAliases = Object.entries(providers).flatMap(
     openRouterResolve: def.openRouterResolve,
     preferred: def.preferred ?? false,
     isFree: def.isFree ?? false,
-    deprecated: def.deprecated ?? false,
     fallback: def.fallback
   }))
 );
