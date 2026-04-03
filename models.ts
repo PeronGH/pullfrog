@@ -225,7 +225,7 @@ export const providers = {
         resolve: "opencode/mimo-v2-pro-free",
         envVars: [],
         isFree: true,
-        fallback: "opencode/nemotron-3-super-free",
+        fallback: "opencode/big-pickle",
       },
       "minimax-m2.5-free": {
         displayName: "MiniMax M2.5",
