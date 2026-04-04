@@ -133,20 +133,17 @@ ${learningsStep(t, 6)}`,
 
 5. Self-critique: drop any comments that are praise, style preferences, speculative, about pre-existing code, or not actionable.
 
-6. **Summarize incremental changes**: produce a concise summary of the changes since the last review. This summary MUST follow strict formatting rules:
-   - **never put more than 3 sentences in a row** — break up prose with lists, tables, or headings
-   - use bullet lists, tables, and structured formatting liberally
-   - start with a 1-sentence TL;DR of what the new commits do
-   - then list the key changes (use a table for file-level changes if 3+ files changed, bullet list otherwise)
-   - note which prior review comments were addressed vs. not addressed (use a checklist: \`- [x] addressed\` / \`- [ ] not addressed\`)
-   - keep the entire summary compact — aim for ≤15 lines of markdown
+6. **Summarize incremental changes**: produce a concise bullet-point summary of the changes since the last review:
+   - one bullet per logical change (e.g. \`- lowered cache TTLs to 60s across all three helpers\`)
+   - note which prior review comments were addressed with a checklist (\`- [x] addressed\` / \`- [ ] not addressed\`)
+   - no headings, no tables, no prose paragraphs — just bullets
    - in some cases you may receive a complete diff for the whole pull request instead of an incremental one. when this happens, you will need to determine what changes have happened since Pullfrog's most recent review.
 
 7. Submit — Do NOT call \`report_progress\` or \`create_issue_comment\` — the review is the final record and the progress comment will be cleaned up automatically. Follow these rules:
    - IF NO NEW ISSUES, NON-SUBSTANTIVE CHANGES ONLY (trivial formatting, import reordering, comment tweaks): do NOT submit a review. Do NOT call \`report_progress\`. Exit — the progress comment will be cleaned up automatically.
-   - ELSE IF NEW CRITICAL ISSUES (blocks merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!CAUTION]\\n> This PR introduces ...\`) + incremental summary from step 6.
-   - ELSE IF NEW RECOMMENDED CHANGES (non-critical): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!IMPORTANT]\\n> Consider adding input validation for ...\`) + incremental summary.
-   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all Previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. The "body" should state up front that no new issues were found. Then include a summary of the detected changes so the user knows that you have reviewed them.`,
+   - ELSE IF NEW CRITICAL ISSUES (blocks merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!CAUTION]\\n> This PR introduces ...\`) followed by the bullet-point summary from step 6.
+   - ELSE IF NEW RECOMMENDED CHANGES (non-critical): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!IMPORTANT]\\n> Consider adding input validation for ...\`) followed by the bullet-point summary.
+   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. The body is just "No new issues." followed by the bullet-point summary from step 6.`,
     },
     {
       name: "Plan",
