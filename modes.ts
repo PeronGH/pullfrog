@@ -143,7 +143,7 @@ ${learningsStep(t, 6)}`,
    - IF NO NEW ISSUES, NON-SUBSTANTIVE CHANGES ONLY (trivial formatting, import reordering, comment tweaks): do NOT submit a review. Do NOT call \`report_progress\`. Exit — the progress comment will be cleaned up automatically.
    - ELSE IF NEW CRITICAL ISSUES (blocks merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!CAUTION]\\n> This PR introduces ...\`) followed by the bullet-point summary from step 6.
    - ELSE IF NEW RECOMMENDED CHANGES (non-critical): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. The review body begins with a GitHub alert blockquote (e.g. \`> [!IMPORTANT]\\n> Consider adding input validation for ...\`) followed by the bullet-point summary.
-   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. The body is just "No new issues." followed by the bullet-point summary from step 6.`,
+   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. The body is just "No new issues. Reviewed the following changes:" followed by the bullet-point summary from step 6.`,
     },
     {
       name: "Plan",
