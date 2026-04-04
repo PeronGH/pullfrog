@@ -15,6 +15,14 @@ interface InstructionsContext {
   learnings: string | null;
 }
 
+interface PromptContext extends InstructionsContext {
+  t: (name: string) => string;
+  eventTitle: string;
+  eventMetadata: string;
+  runtime: string;
+  userQuoted: string;
+}
+
 function buildRuntimeContext(ctx: InstructionsContext): string {
   // extract payload fields excluding prompt/instructions/event (those are rendered separately)
   const {
@@ -136,24 +144,25 @@ In case of conflict between instructions, follow this precedence (highest to low
 // ---------------------------------------------------------------------------
 
 // the user's task: blockquoted user prompt, or event-level instructions for auto-triggers
-function buildTaskSection(ctx: { userQuoted: string; eventInstructions: string }): string {
+function buildTaskSection(ctx: PromptContext): string {
   if (ctx.userQuoted) {
     return `************* YOUR TASK *************
 
 ${ctx.userQuoted}`;
   }
 
-  if (ctx.eventInstructions) {
+  const eventInstructions = ctx.payload.eventInstructions ?? "";
+  if (eventInstructions) {
     return `************* YOUR TASK *************
 
-${ctx.eventInstructions}`;
+${eventInstructions}`;
   }
 
   return "";
 }
 
 // mode selection and execution steps
-function buildProcedure(ctx: { modes: Mode[]; t: (name: string) => string }): string {
+function buildProcedure(ctx: PromptContext): string {
   const t = ctx.t;
   return `************* PROCEDURE *************
 
@@ -180,11 +189,7 @@ Eagerly inspect the MCP tools available to you via the \`${pullfrogMcpName}\` MC
 }
 
 // event title + metadata (omitted when empty, e.g. workflow_dispatch)
-function buildEventContext(ctx: {
-  payload: ResolvedPayload;
-  eventTitle: string;
-  eventMetadata: string;
-}): string {
+function buildEventContext(ctx: PromptContext): string {
   const isPr = ctx.payload.event.is_pr === true;
   const relatedLabel = isPr ? "--- related PR ---" : "--- related issue ---";
 
@@ -200,12 +205,7 @@ ${content}`;
 }
 
 // persona, environment, priority, security, tools, workflow
-function buildSystemBody(ctx: {
-  shell: ResolvedPayload["shell"];
-  trigger: string;
-  t: (name: string) => string;
-  outputSchema?: Record<string, unknown> | undefined;
-}): string {
+function buildSystemBody(ctx: PromptContext): string {
   const t = ctx.t;
   return `************* SYSTEM *************
 
@@ -257,11 +257,11 @@ Rules:
 
 Use MCP tools from ${pullfrogMcpName} for all GitHub operations. Never use the \`gh\` CLI — it is not authenticated and will fail. The MCP tools handle authentication and enforce permissions.
 
-${getShellInstructions(ctx.shell, t)}
+${getShellInstructions(ctx.payload.shell, t)}
 
 ${getFileInstructions()}
 
-${getStandaloneModeInstructions(ctx.trigger, t, ctx.outputSchema)}
+${getStandaloneModeInstructions(ctx.payload.event.trigger, t, ctx.outputSchema)}
 
 ## Workflow
 
@@ -312,38 +312,20 @@ function buildToc(entries: TocEntry[]): string {
 ${entries.map((e) => `- ${e.label} — ${e.description}`).join("\n")}`;
 }
 
-// shared computation for all instruction builders
-interface CommonInputs {
-  eventTitle: string;
-  eventMetadata: string;
-  runtime: string;
-  user: string;
-  eventInstructions: string;
-  event: string;
-  userQuoted: string;
-}
-
-function buildCommonInputs(ctx: InstructionsContext): CommonInputs {
-  const eventTitle = buildEventTitle(ctx.payload.event);
-  const eventMetadata = buildEventMetadata(ctx.payload.event);
-  const runtime = buildRuntimeContext(ctx);
+function buildPromptContext(ctx: InstructionsContext): PromptContext {
   const user = ctx.payload.prompt;
-  const eventInstructions = ctx.payload.eventInstructions ?? "";
-  const event = [eventTitle, eventMetadata].filter(Boolean).join("\n\n---\n\n");
-  const userQuoted = user
-    ? user
-        .split("\n")
-        .map((line) => `> ${line}`)
-        .join("\n")
-    : "";
   return {
-    eventTitle,
-    eventMetadata,
-    runtime,
-    user,
-    eventInstructions,
-    event,
-    userQuoted,
+    ...ctx,
+    t: (toolName: string) => formatMcpToolRef(ctx.agentId, toolName),
+    eventTitle: buildEventTitle(ctx.payload.event),
+    eventMetadata: buildEventMetadata(ctx.payload.event),
+    runtime: buildRuntimeContext(ctx),
+    userQuoted: user
+      ? user
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n")
+      : "",
   };
 }
 
@@ -387,28 +369,12 @@ function assembleFullPrompt(ctx: {
 }
 
 export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructions {
-  const inputs = buildCommonInputs(ctx);
-  const t = (toolName: string) => formatMcpToolRef(ctx.agentId, toolName);
+  const pctx = buildPromptContext(ctx);
 
-  const task = buildTaskSection({
-    userQuoted: inputs.userQuoted,
-    eventInstructions: inputs.eventInstructions,
-  });
-
-  const procedure = buildProcedure({ modes: ctx.modes, t });
-
-  const eventContext = buildEventContext({
-    payload: ctx.payload,
-    eventTitle: inputs.eventTitle,
-    eventMetadata: inputs.eventMetadata,
-  });
-
-  const system = buildSystemBody({
-    shell: ctx.payload.shell,
-    trigger: ctx.payload.event.trigger,
-    t,
-    outputSchema: ctx.outputSchema,
-  });
+  const task = buildTaskSection(pctx);
+  const procedure = buildProcedure(pctx);
+  const eventContext = buildEventContext(pctx);
+  const system = buildSystemBody(pctx);
 
   // build TOC from present sections (PROCEDURE, SYSTEM, RUNTIME are always present)
   const tocEntries: TocEntry[] = [];
@@ -417,7 +383,7 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
   if (eventContext)
     tocEntries.push({ label: "EVENT CONTEXT", description: "related PR/issue data" });
   tocEntries.push({ label: "SYSTEM", description: "persona, security, tools, workflow rules" });
-  if (ctx.learnings)
+  if (pctx.learnings)
     tocEntries.push({ label: "LEARNINGS", description: "repo-specific knowledge" });
   tocEntries.push({ label: "RUNTIME", description: "environment metadata" });
 
@@ -429,16 +395,18 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
     procedure,
     eventContext,
     system,
-    learnings: ctx.learnings,
-    runtime: inputs.runtime,
+    learnings: pctx.learnings,
+    runtime: pctx.runtime,
   });
+
+  const event = [pctx.eventTitle, pctx.eventMetadata].filter(Boolean).join("\n\n---\n\n");
 
   return {
     full,
     system,
-    user: inputs.user,
-    eventInstructions: inputs.eventInstructions,
-    event: inputs.event,
-    runtime: inputs.runtime,
+    user: pctx.payload.prompt,
+    eventInstructions: pctx.payload.eventInstructions ?? "",
+    event,
+    runtime: pctx.runtime,
   };
 }

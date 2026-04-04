@@ -57,23 +57,20 @@ function normalizeUrl(url: string): string {
   return url.replace(/\.git$/, "").toLowerCase();
 }
 
-type ValidatePushParams = {
-  branch: string;
-  pushUrl: string;
-  storedDest: StoredPushDest | undefined;
-};
-
 /**
  * validate that the push destination matches expected URL.
  * pushUrl is set by setupGit (base repo) and updated by checkout_pr (fork repo).
  */
-function validatePushDestination(params: ValidatePushParams): PushDestination {
-  const dest = getPushDestination(params.branch, params.storedDest);
+function validatePushDestination(ctx: ToolContext, branch: string): PushDestination {
+  const pushUrl = ctx.toolState.pushUrl;
+  if (!pushUrl) throw new Error("pushUrl not set - setupGit must run before push_branch");
 
-  if (normalizeUrl(dest.url) !== normalizeUrl(params.pushUrl)) {
+  const dest = getPushDestination(branch, ctx.toolState.pushDest);
+
+  if (normalizeUrl(dest.url) !== normalizeUrl(pushUrl)) {
     throw new Error(
       `Push blocked: destination does not match expected repository.\n` +
-        `Expected: ${params.pushUrl}\n` +
+        `Expected: ${pushUrl}\n` +
         `Actual: ${dest.url}\n` +
         `Git configuration may have been tampered with.`
     );
@@ -119,15 +116,7 @@ export function PushBranchTool(ctx: ToolContext) {
       }
 
       // validate push destination matches expected URL
-      const pushUrl = ctx.toolState.pushUrl;
-      if (!pushUrl) {
-        throw new Error("pushUrl not set - setupGit must run before push_branch");
-      }
-      const pushDest = validatePushDestination({
-        branch,
-        pushUrl,
-        storedDest: ctx.toolState.pushDest,
-      });
+      const pushDest = validatePushDestination(ctx, branch);
 
       // block pushes to default branch in restricted mode
       if (pushPermission === "restricted" && pushDest.remoteBranch === defaultBranch) {

@@ -65,15 +65,14 @@ const modeInstructionParent: Record<string, string> = {
   Fix: "Build",
 };
 
-type BuildGuidanceOpts = {
-  modeInstructions?: Record<string, string>;
-  overrideGuidance?: string;
-};
-
-function buildOrchestratorGuidance(mode: Mode, opts: BuildGuidanceOpts = {}): OrchestratorGuidance {
-  const hardcoded = opts.overrideGuidance ?? mode.prompt ?? "";
+function buildOrchestratorGuidance(
+  ctx: ToolContext,
+  mode: Mode,
+  overrideGuidance?: string
+): OrchestratorGuidance {
+  const hardcoded = overrideGuidance ?? mode.prompt ?? "";
   const lookupKey = modeInstructionParent[mode.name] ?? mode.name;
-  const userInstructions = opts.modeInstructions?.[lookupKey] ?? "";
+  const userInstructions = ctx.modeInstructions[lookupKey] ?? "";
   const guidance = [hardcoded, userInstructions].filter(Boolean).join("\n\n");
   return {
     modeName: mode.name,
@@ -172,8 +171,6 @@ export function SelectModeTool(ctx: ToolContext) {
 
       ctx.toolState.selectedMode = selectedMode.name;
 
-      const guidanceOpts: BuildGuidanceOpts = { modeInstructions: ctx.modeInstructions };
-
       if (selectedMode.name === "Plan") {
         const issueNumber = params.issue_number ?? ctx.payload.event.issue_number;
         if (issueNumber !== undefined) {
@@ -182,10 +179,7 @@ export function SelectModeTool(ctx: ToolContext) {
             ctx.toolState.existingPlanCommentId = existing.commentId;
             ctx.toolState.previousPlanBody = existing.body;
             return {
-              ...buildOrchestratorGuidance(selectedMode, {
-                ...guidanceOpts,
-                overrideGuidance: overrides.PlanEdit,
-              }),
+              ...buildOrchestratorGuidance(ctx, selectedMode, overrides.PlanEdit),
               previousPlanBody: existing.body,
             };
           }
@@ -199,10 +193,7 @@ export function SelectModeTool(ctx: ToolContext) {
           if (existing !== null) {
             ctx.toolState.existingSummaryCommentId = existing.commentId;
             return {
-              ...buildOrchestratorGuidance(selectedMode, {
-                ...guidanceOpts,
-                overrideGuidance: overrides.SummaryUpdate,
-              }),
+              ...buildOrchestratorGuidance(ctx, selectedMode, overrides.SummaryUpdate),
               existingSummaryCommentId: existing.commentId,
               previousSummaryBody: existing.body,
             };
@@ -210,7 +201,7 @@ export function SelectModeTool(ctx: ToolContext) {
         }
       }
 
-      return buildOrchestratorGuidance(selectedMode, guidanceOpts);
+      return buildOrchestratorGuidance(ctx, selectedMode);
     }),
   });
 }

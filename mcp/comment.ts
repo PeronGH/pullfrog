@@ -4,7 +4,6 @@ import { getApiUrl } from "../utils/apiUrl.ts";
 import { buildPullfrogFooter, stripExistingFooter } from "../utils/buildPullfrogFooter.ts";
 import { log } from "../utils/cli.ts";
 import { fixDoubleEscapedString } from "../utils/fixDoubleEscapedString.ts";
-import { type OctokitWithPlugins, parseRepoContext } from "../utils/github.ts";
 import { retry } from "../utils/retry.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
@@ -52,65 +51,37 @@ export async function updateCommentNodeId(
  */
 export const LEAPING_INTO_ACTION_PREFIX = "Leaping into action";
 
-interface BuildCommentFooterParams {
-  octokit?: OctokitWithPlugins | undefined;
-  customParts?: string[] | undefined;
-  model?: string | undefined;
-}
-
-async function buildCommentFooter(params: BuildCommentFooterParams): Promise<string> {
-  const repoContext = parseRepoContext();
-  const runId = process.env.GITHUB_RUN_ID
-    ? Number.parseInt(process.env.GITHUB_RUN_ID, 10)
-    : undefined;
-
-  let jobId: string | undefined;
-  if (runId && params.octokit) {
-    try {
-      const { data: jobs } = await params.octokit.rest.actions.listJobsForWorkflowRun({
-        owner: repoContext.owner,
-        repo: repoContext.name,
-        run_id: runId,
-      });
-      jobId = jobs.jobs[0]?.id.toString();
-    } catch {
-      // fall back to computed URL from runId alone
-    }
-  }
-
+function buildCommentFooter(ctx: ToolContext, customParts?: string[]): string {
+  const runId = ctx.runId;
   return buildPullfrogFooter({
     triggeredBy: true,
-    workflowRun: runId
-      ? { owner: repoContext.owner, repo: repoContext.name, runId, jobId }
-      : undefined,
-    customParts: params.customParts,
-    model: params.model,
+    workflowRun:
+      runId !== undefined
+        ? {
+            owner: ctx.repo.owner,
+            repo: ctx.repo.name,
+            runId,
+            jobId: ctx.jobId,
+          }
+        : undefined,
+    customParts,
+    model: ctx.toolState.model,
   });
 }
 
-function buildImplementPlanLink(
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  commentId: number
-): string {
+function buildImplementPlanLink(ctx: ToolContext, issueNumber: number, commentId: number): string {
   const apiUrl = getApiUrl();
-  return `[Implement plan ➔](${apiUrl}/trigger/${owner}/${repo}/${issueNumber}?action=implement&comment_id=${commentId})`;
+  return `[Implement plan ➔](${apiUrl}/trigger/${ctx.repo.owner}/${ctx.repo.name}/${issueNumber}?action=implement&comment_id=${commentId})`;
 }
 
-export interface AddFooterCtx {
-  octokit?: OctokitWithPlugins | undefined;
-  toolState?: { model?: string | undefined } | undefined;
-}
-
-export async function addFooter(ctx: AddFooterCtx, body: string): Promise<string> {
+export function addFooter(ctx: ToolContext, body: string): string {
   if (/<br\s*\/?>[ \t]*\n(?!\s*\n)/i.test(body)) {
     throw new Error(
       "body contains <br/> followed by a non-blank line, which breaks GitHub markdown rendering. always add a blank line after <br/> tags."
     );
   }
   const bodyWithoutFooter = stripExistingFooter(fixDoubleEscapedString(body));
-  const footer = await buildCommentFooter({ octokit: ctx.octokit, model: ctx.toolState?.model });
+  const footer = buildCommentFooter(ctx);
   return `${bodyWithoutFooter}${footer}`;
 }
 
@@ -132,7 +103,7 @@ export function CreateCommentTool(ctx: ToolContext) {
       "Create a comment on a GitHub issue or PR. For progress/plan updates on the current run use report_progress instead. Use type: 'Plan' for plan comments, type: 'Summary' for PR summary comments.",
     parameters: Comment,
     execute: execute(async ({ issueNumber, body, type: commentType }) => {
-      const bodyWithFooter = await addFooter(ctx, body);
+      const bodyWithFooter = addFooter(ctx, body);
 
       // if a summary comment already exists (found by select_mode), update instead of creating
       if (commentType === "Summary" && ctx.toolState.existingSummaryCommentId) {
@@ -193,7 +164,7 @@ export function EditCommentTool(ctx: ToolContext) {
     description: "Edit a GitHub issue comment by its ID",
     parameters: EditComment,
     execute: execute(async ({ commentId, body }) => {
-      const bodyWithFooter = await addFooter(ctx, body);
+      const bodyWithFooter = addFooter(ctx, body);
 
       const result = await ctx.octokit.rest.issues.updateComment({
         owner: ctx.repo.owner,
@@ -260,14 +231,10 @@ export async function reportProgress(
     const commentId = ctx.toolState.existingPlanCommentId;
     const customParts =
       isPlanMode && issueNumber !== undefined
-        ? [buildImplementPlanLink(ctx.repo.owner, ctx.repo.name, issueNumber, commentId)]
+        ? [buildImplementPlanLink(ctx, issueNumber, commentId)]
         : undefined;
     const bodyWithoutFooter = stripExistingFooter(body);
-    const footer = await buildCommentFooter({
-      octokit: ctx.octokit,
-      customParts,
-      model: ctx.toolState.model,
-    });
+    const footer = buildCommentFooter(ctx, customParts);
     const bodyWithFooter = `${bodyWithoutFooter}${footer}`;
 
     const result = await ctx.octokit.rest.issues.updateComment({
@@ -297,15 +264,11 @@ export async function reportProgress(
   if (existingCommentId) {
     const customParts =
       isPlanMode && issueNumber !== undefined
-        ? [buildImplementPlanLink(ctx.repo.owner, ctx.repo.name, issueNumber, existingCommentId)]
+        ? [buildImplementPlanLink(ctx, issueNumber, existingCommentId)]
         : undefined;
 
     const bodyWithoutFooter = stripExistingFooter(body);
-    const footer = await buildCommentFooter({
-      octokit: ctx.octokit,
-      customParts,
-      model: ctx.toolState.model,
-    });
+    const footer = buildCommentFooter(ctx, customParts);
     const bodyWithFooter = `${bodyWithoutFooter}${footer}`;
 
     const result = await ctx.octokit.rest.issues.updateComment({
@@ -343,7 +306,7 @@ export async function reportProgress(
   }
 
   // for new comments, we need to create first, then update with Plan link if in Plan mode
-  const initialBody = await addFooter(ctx, body);
+  const initialBody = addFooter(ctx, body);
 
   const result = await ctx.octokit.rest.issues.createComment({
     owner: ctx.repo.owner,
@@ -358,15 +321,9 @@ export async function reportProgress(
 
   // if Plan mode, update the comment to add the "Implement plan" link
   if (isPlanMode) {
-    const customParts = [
-      buildImplementPlanLink(ctx.repo.owner, ctx.repo.name, issueNumber, result.data.id),
-    ];
+    const customParts = [buildImplementPlanLink(ctx, issueNumber, result.data.id)];
     const bodyWithoutFooter = stripExistingFooter(body);
-    const footer = await buildCommentFooter({
-      octokit: ctx.octokit,
-      customParts,
-      model: ctx.toolState.model,
-    });
+    const footer = buildCommentFooter(ctx, customParts);
     const bodyWithPlanLink = `${bodyWithoutFooter}${footer}`;
 
     const updateResult = await ctx.octokit.rest.issues.updateComment({
@@ -490,7 +447,7 @@ export function ReplyToReviewCommentTool(ctx: ToolContext) {
       "Reply to a PR review comment thread (NOT issue comments — this only works for inline review comments on PR diffs). Call this for EACH comment you address in AddressReviews mode. Keep replies extremely brief (1 sentence max).",
     parameters: ReplyToReviewComment,
     execute: execute(async ({ pull_number, comment_id, body }) => {
-      const bodyWithFooter = await addFooter(ctx, body);
+      const bodyWithFooter = addFooter(ctx, body);
 
       const result = await ctx.octokit.rest.pulls.createReplyForReviewComment({
         owner: ctx.repo.owner,

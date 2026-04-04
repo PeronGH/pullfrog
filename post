@@ -37812,6 +37812,33 @@ ${PULLFROG_DIVIDER}
 <sup>${FROG_LOGO}&nbsp;&nbsp;\uFF5C ${allParts.join(" \uFF5C ")}</sup>`;
 }
 
+// mcp/comment.ts
+var LEAPING_INTO_ACTION_PREFIX = "Leaping into action";
+var Comment = type({
+  issueNumber: type.number.describe("the issue number to comment on"),
+  body: type.string.describe("the comment body content"),
+  type: type.enumerated("Plan", "Summary", "Comment").describe(
+    "Plan: record as the plan for this run. Summary: record as the PR summary comment (one per PR, updated in place). Comment: regular comment (default)."
+  ).optional()
+});
+var EditComment = type({
+  commentId: type.number.describe("the ID of the comment to edit"),
+  body: type.string.describe("the new comment body content")
+});
+var ReportProgress = type({
+  body: type.string.describe("the progress update content to share"),
+  "target_plan_comment?": type("boolean").describe(
+    "when true, update the existing plan comment (from select_mode lookup) instead of the progress comment; use when editing an existing plan"
+  )
+});
+var ReplyToReviewComment = type({
+  pull_number: type.number.describe("the pull request number"),
+  comment_id: type.number.describe("the ID of the review comment to reply to"),
+  body: type.string.describe(
+    "extremely brief reply (1 sentence max) explaining what was fixed, e.g. 'Fixed by renaming to X' or 'Added null check'"
+  )
+});
+
 // utils/github.ts
 var core2 = __toESM(require_core(), 1);
 
@@ -41526,33 +41553,6 @@ function createOctokit(token) {
   return octokit;
 }
 
-// mcp/comment.ts
-var LEAPING_INTO_ACTION_PREFIX = "Leaping into action";
-var Comment = type({
-  issueNumber: type.number.describe("the issue number to comment on"),
-  body: type.string.describe("the comment body content"),
-  type: type.enumerated("Plan", "Summary", "Comment").describe(
-    "Plan: record as the plan for this run. Summary: record as the PR summary comment (one per PR, updated in place). Comment: regular comment (default)."
-  ).optional()
-});
-var EditComment = type({
-  commentId: type.number.describe("the ID of the comment to edit"),
-  body: type.string.describe("the new comment body content")
-});
-var ReportProgress = type({
-  body: type.string.describe("the progress update content to share"),
-  "target_plan_comment?": type("boolean").describe(
-    "when true, update the existing plan comment (from select_mode lookup) instead of the progress comment; use when editing an existing plan"
-  )
-});
-var ReplyToReviewComment = type({
-  pull_number: type.number.describe("the pull request number"),
-  comment_id: type.number.describe("the ID of the review comment to reply to"),
-  body: type.string.describe(
-    "extremely brief reply (1 sentence max) explaining what was fixed, e.g. 'Fixed by renaming to X' or 'Added null check'"
-  )
-});
-
 // utils/payload.ts
 var core3 = __toESM(require_core(), 1);
 
@@ -41725,40 +41725,44 @@ function getJobToken() {
 
 // utils/postCleanup.ts
 var SHOULD_CHECK_REASON = true;
-function buildErrorCommentBody(params) {
-  let errorMessage = params.isCancellation ? `This run was cancelled \u{1F6D1}
+function buildErrorCommentBody(ctx, isCancellation) {
+  let errorMessage = isCancellation ? `This run was cancelled \u{1F6D1}
 
 The workflow was cancelled before completion.` : `This run croaked \u{1F635}
 
 The workflow encountered an error before any progress could be reported.`;
-  if (params.runId) {
+  if (ctx.runId) {
     errorMessage += " Please check the link below for details.";
   }
   const customParts = [];
-  if (!params.isCancellation && params.runId) {
+  if (!isCancellation && ctx.runId) {
     const apiUrl = getApiUrl();
     customParts.push(
-      `[Rerun failed job \u2794](${apiUrl}/trigger/${params.owner}/${params.repo}/${params.runId}?action=rerun)`
+      `[Rerun failed job \u2794](${apiUrl}/trigger/${ctx.repoContext.owner}/${ctx.repoContext.name}/${ctx.runId}?action=rerun)`
     );
   }
   const footer = buildPullfrogFooter({
     triggeredBy: true,
-    workflowRun: params.runId ? { owner: params.owner, repo: params.repo, runId: params.runId } : void 0,
+    workflowRun: ctx.runId ? {
+      owner: ctx.repoContext.owner,
+      repo: ctx.repoContext.name,
+      runId: ctx.runId
+    } : void 0,
     customParts
   });
   return `${errorMessage}${footer}`;
 }
-async function validateStuckProgressComment(params) {
-  if (!params.promptInput?.progressCommentId) {
+async function validateStuckProgressComment(ctx) {
+  if (!ctx.promptInput?.progressCommentId) {
     log.info("[post] no progressCommentId in prompt input, skipping cleanup");
     return null;
   }
-  const commentId = parseInt(params.promptInput.progressCommentId, 10);
+  const commentId = parseInt(ctx.promptInput.progressCommentId, 10);
   log.info(`[post] validating progressCommentId from prompt input: ${commentId}`);
   try {
-    const commentResult = await params.octokit.rest.issues.getComment({
-      owner: params.owner,
-      repo: params.repo,
+    const commentResult = await ctx.octokit.rest.issues.getComment({
+      owner: ctx.repoContext.owner,
+      repo: ctx.repoContext.name,
       comment_id: commentId
     });
     const body = commentResult.data.body ?? "";
@@ -41778,13 +41782,13 @@ async function validateStuckProgressComment(params) {
     return null;
   }
 }
-async function getIsCancelled(params) {
-  if (!params.runId) return false;
+async function getIsCancelled(ctx) {
+  if (!ctx.runId) return false;
   try {
-    const jobsResult = await params.octokit.rest.actions.listJobsForWorkflowRun({
-      owner: params.repoContext.owner,
-      repo: params.repoContext.name,
-      run_id: params.runId
+    const jobsResult = await ctx.octokit.rest.actions.listJobsForWorkflowRun({
+      owner: ctx.repoContext.owner,
+      repo: ctx.repoContext.name,
+      run_id: ctx.runId
     });
     const currentJobName = process.env.GITHUB_JOB;
     const currentJob = currentJobName ? jobsResult.data.jobs.find(
@@ -41824,24 +41828,18 @@ async function runPostCleanup() {
   const token = getJobToken();
   const repoContext = parseRepoContext();
   const octokit = createOctokit(token);
-  const commentId = await validateStuckProgressComment({
-    promptInput,
-    octokit,
-    owner: repoContext.owner,
-    repo: repoContext.name
-  });
+  const ctx = { repoContext, octokit, runId, promptInput };
+  const commentId = await validateStuckProgressComment(ctx);
   if (!commentId) return log.info("\xBB [post] no stuck progress comment to update, skipping cleanup");
   log.info(`\xBB [post] validated stuck comment: ${commentId}, updating with error message`);
   try {
-    const body = buildErrorCommentBody({
-      owner: repoContext.owner,
-      repo: repoContext.name,
-      runId,
-      isCancellation: SHOULD_CHECK_REASON ? await getIsCancelled({ octokit, repoContext, runId }) : false
-    });
-    await octokit.rest.issues.updateComment({
-      owner: repoContext.owner,
-      repo: repoContext.name,
+    const body = buildErrorCommentBody(
+      ctx,
+      SHOULD_CHECK_REASON ? await getIsCancelled(ctx) : false
+    );
+    await ctx.octokit.rest.issues.updateComment({
+      owner: ctx.repoContext.owner,
+      repo: ctx.repoContext.name,
       comment_id: commentId,
       body
     });

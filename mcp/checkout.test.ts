@@ -1,7 +1,8 @@
-import { Octokit } from "@octokit/rest";
+import type { RestEndpointMethodTypes } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
-import { acquireNewToken } from "../utils/github.ts";
+import { acquireNewToken, createOctokit } from "../utils/github.ts";
 import { fetchAndFormatPrDiff } from "./checkout.ts";
+import type { ToolContext } from "./server.ts";
 
 /**
  * parses TOC entries like "- src/math.ts → lines 7-42" into structured data.
@@ -33,13 +34,16 @@ describe("fetchAndFormatPrDiff", () => {
     { timeout: 30000 },
     async () => {
       const token = await getToken();
-      const octokit = new Octokit({ auth: token });
-      const result = await fetchAndFormatPrDiff({
+      const octokit = createOctokit(token);
+      const ctx = {
         octokit,
-        owner: "pullfrog",
-        repo: "test-repo",
-        pullNumber: 1,
-      });
+        repo: {
+          owner: "pullfrog",
+          name: "test-repo",
+          data: {} as RestEndpointMethodTypes["repos"]["get"]["response"]["data"],
+        },
+      } as ToolContext;
+      const result = await fetchAndFormatPrDiff(ctx, 1);
 
       // verify content includes TOC at the start
       expect(result.content.startsWith(result.toc)).toBe(true);

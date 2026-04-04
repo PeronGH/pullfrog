@@ -145,22 +145,18 @@ export type CheckoutPrResult = {
   instructions: string;
 };
 
-type FetchPrDiffParams = {
-  octokit: Octokit;
-  owner: string;
-  repo: string;
-  pullNumber: number;
-};
-
 /**
  * fetches PR files from GitHub and formats them with line numbers and TOC.
  * this is the core diff formatting logic, extracted for testability.
  */
-export async function fetchAndFormatPrDiff(params: FetchPrDiffParams): Promise<FormatFilesResult> {
-  const files = await params.octokit.paginate(params.octokit.rest.pulls.listFiles, {
-    owner: params.owner,
-    repo: params.repo,
-    pull_number: params.pullNumber,
+export async function fetchAndFormatPrDiff(
+  ctx: ToolContext,
+  pullNumber: number
+): Promise<FormatFilesResult> {
+  const files = await ctx.octokit.paginate(ctx.octokit.rest.pulls.listFiles, {
+    owner: ctx.repo.owner,
+    repo: ctx.repo.name,
+    pull_number: pullNumber,
     per_page: 100,
   });
   return formatFilesWithLineNumbers(files);
@@ -502,12 +498,7 @@ export function CheckoutPrTool(ctx: ToolContext) {
       }
 
       // fetch PR files and format with line numbers
-      const formatResult = await fetchAndFormatPrDiff({
-        octokit: ctx.octokit,
-        owner: ctx.repo.owner,
-        repo: ctx.repo.name,
-        pullNumber: pull_number,
-      });
+      const formatResult = await fetchAndFormatPrDiff(ctx, pull_number);
       const diffPreview = formatResult.content.split("\n").slice(0, 100).join("\n");
       log.debug(`formatted diff preview (first 100 lines):\n${diffPreview}`);
       const diffPath = join(tempDir, `pr-${pull_number}-${headShort}.diff`);
