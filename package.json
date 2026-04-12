@@ -20,7 +20,6 @@
     "scratch": "node scratch.ts",
     "upDeps": "pnpm up --latest",
     "lock": "pnpm install --no-frozen-lockfile",
-    "postinstall": "node scripts/generate-proxies.ts",
     "prepare": "cd .. && husky action/.husky"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { formatMcpToolRef } from "../external.ts";
-import type { Mode } from "../modes.ts";
+import { PR_SUMMARY_FORMAT, type Mode } from "../modes.ts";
 import { apiFetch } from "../utils/apiFetch.ts";
 import { log } from "../utils/log.ts";
 import type { ToolContext } from "./server.ts";
@@ -39,9 +39,11 @@ An existing summary comment was found for this PR. Update it rather than creatin
 
 1. Use \`previousSummaryBody\` from this response as the current summary to revise.
 2. Checkout the PR via \`${t("checkout_pr")}\` — this returns PR metadata and a \`diffPath\`.
-3. Read the diff using the TOC to selectively read relevant sections. Produce an updated summary reflecting the current state of the PR, using the existing summary (\`previousSummaryBody\`) as a starting point. Follow format instructions from EVENT INSTRUCTIONS (if any).
+3. Read the diff using the TOC to selectively read relevant sections. Produce an updated summary reflecting the current state of the PR, using the existing summary (\`previousSummaryBody\`) as a starting point. If EVENT INSTRUCTIONS specify a custom format, follow that instead of the default format below.
 4. Call \`${t("edit_issue_comment")}\` with \`commentId: existingSummaryCommentId\` (from this response) and the updated summary body.
-5. Call \`${t("report_progress")}\` with a brief note (e.g., "Updated PR summary.").`,
+5. Call \`${t("report_progress")}\` with a brief note (e.g., "Updated PR summary.").
+
+${PR_SUMMARY_FORMAT}`,
   };
 }
 

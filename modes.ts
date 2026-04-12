@@ -9,6 +9,55 @@ export interface Mode {
   prompt?: string | undefined;
 }
 
+export const PR_SUMMARY_FORMAT = `### Default format
+
+Follow this structure exactly:
+
+<b>TL;DR</b> — 1-3 sentences on what the PR does and why. Focus on intent, not mechanics.
+NOTE: use HTML bold <b>TL;DR</b>, NOT markdown bold **TL;DR**.
+
+### Key changes
+
+- **Short human-readable title** — 1 sentence per change. Write a short prose phrase (title case or sentence case); when you name a file, type, or function, put that name in backticks (e.g. **Add \`TodoTracker\` for live checklists**). A reviewer should understand the full PR from this list alone.
+
+<sub><b>Summary</b> ｜ {file_count} files ｜ {commit_count} commits ｜ base: \`{base}\` ← \`{head}\`</sub>
+NOTE: the metadata line goes AFTER the bullet list, not before it.
+
+Then for each key change, a ## section with a short descriptive title that reads like a documentation heading (e.g. ## Live todo checklist tracking).
+
+<br/>
+
+## Example readable section title
+
+> **Before:** [old behavior/state]<br/>**After:** [new behavior/state]
+IMPORTANT: Before and After MUST be on a SINGLE blockquote line with an inline <br/> between them. Two separate \`>\` lines creates a double line break.
+
+1-2 sentences of explanation. Break up text with tables, blockquotes, or lists — NEVER 3+ plain paragraphs in a row.
+
+If a change warrants deeper explanation, use a blockquoted details/summary framed as a question:
+> <details><summary>How does X work?</summary>
+> Extended explanation here.
+> </details>
+
+End each section with a file links trail (3-4 key files max):
+[\`file.ts\`](https://github.com/{owner}/{repo}/pull/{number}/files#diff-{sha256hex_of_filepath}) · ...
+
+Single-feature PRs: skip the ## sections. Fold before/after and explanation into the header after key changes.
+
+CRITICAL — GitHub markdown rendering rule:
+GitHub's markdown parser requires a blank line between ALL block-level elements. This includes transitions between: HTML tags (<br/>, <sub>, <details>, <b>, etc.) and markdown syntax (headings, lists, blockquotes, paragraphs). Without a blank line, GitHub treats the following content as a continuation of the HTML block and renders markdown syntax as literal text. ALWAYS separate block-level elements with a blank line.
+
+Rules:
+- \`##\` titles and key-change bullet lead-ins are plain-language summaries; backtick only actual code tokens (files, types, functions) where they appear in the title
+- ALL variable names, identifiers, and file names in body text must be in backticks
+- ALL file references MUST link to the PR Files Changed view. Compute anchors by running \`echo -n 'path/to/file.ts' | sha256sum\` via shell for each file. NEVER fabricate hex strings — run the actual command. If shell is unavailable, omit the #diff- anchor rather than guessing.
+- Add <br/> before each ## heading for visual spacing. Do NOT use horizontal rules (---)
+- Do NOT include raw diff stats like '+123 / -45' or line counts
+- Do NOT include code blocks or repeat diff contents
+- Do NOT include a changelog section — the key changes list serves this purpose
+- Focus on *intent*, not *what* — the diff already shows what changed
+- Get the file count and commit count from the checkout_pr metadata, not by counting manually`;
+
 function learningsStep(t: (toolName: string) => string, n: number): string {
   return `${n}. **learnings** (only if high confidence): if you discovered something about repo setup, test commands, conventions, or patterns that you are confident is correct and would reliably help future runs, call \`${t("update_learnings")}\` to persist it. skip this step if you are unsure or the finding is speculative/one-off. format as a flat bullet list (\`- \` per line, one fact per bullet). merge with existing learnings from the prompt — pass the FULL merged list. deduplicate, and drop bullets that are clearly wrong or no longer relevant to the current codebase.`;
 }
@@ -240,9 +289,11 @@ ${learningsStep(t, 4)}`,
       prompt: `### Checklist
 
 1. Checkout the PR via \`${t("checkout_pr")}\` — this returns PR metadata and a \`diffPath\`.
-2. Read the diff using the TOC to selectively read relevant sections (not the entire file). Produce a structured summary using format instructions from EVENT INSTRUCTIONS (if any); otherwise use default format: TL;DR, key changes list, per-change sections with plain-language \`##\` titles and before/after framing.
+2. Read the diff using the TOC to selectively read relevant sections (not the entire file). Produce a structured summary. If EVENT INSTRUCTIONS specify a custom format, follow that instead of the default format below.
 3. Call \`${t("create_issue_comment")}\` with \`type: "Summary"\` and the summary body.
-4. Call \`${t("report_progress")}\` with a brief note (e.g., "Posted PR summary.").`,
+4. Call \`${t("report_progress")}\` with a brief note (e.g., "Posted PR summary.").
+
+${PR_SUMMARY_FORMAT}`,
     },
   ];
 }
