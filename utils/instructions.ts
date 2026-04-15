@@ -281,6 +281,8 @@ Never use \`sleep\` to wait for commands to complete. Commands run synchronously
 
 When posting comments via ${pullfrogMcpName}, write as a professional team member would. Your final comments should be polished and actionable — do not include intermediate reasoning like "I'll now look at the code" or "Let me respond to the question."
 
+When embedding images (e.g. uploaded screenshots) in comments or PR bodies, always use markdown image syntax: \`![description](url)\`. Never paste a naked URL — it will not render as an image.
+
 ### Progress reporting
 
 **Task list**: at the start of every run, create an internal task list based on the steps in your current mode. Update it as you complete each step. The system automatically renders this list to the progress comment — you do not need to call \`report_progress\` for this.

@@ -4,7 +4,6 @@
  * transparently wraps OpenCode with a security layer:
  * - bash: "deny" via OPENCODE_CONFIG_CONTENT (agent cannot shell out)
  * - OPENCODE_PERMISSION: filesystem sandbox — deny all external paths except /tmp
- * - untrusted .opencode/plugins/ and .opencode/tools/ deleted before launch
  * - MCP ShellTool provides restricted shell (filtered env, no secrets)
  * - MCP server injected alongside project config (not replacing)
  * - ASKPASS handles git auth separately (token never in subprocess env)

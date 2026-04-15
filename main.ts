@@ -1,5 +1,7 @@
 // changes to tool permissions should be reflected in wiki/granular-tools.md
 
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import * as core from "@actions/core";
 import { deleteProgressComment, reportProgress } from "./mcp/comment.ts";
 import { startInstallation } from "./mcp/dependencies.ts";
@@ -337,6 +339,21 @@ export async function main(): Promise<MainResult> {
       log.info(instructions.full);
     });
 
+    // OpenCode loads .opencode/plugin/ files at startup. if the repo has any,
+    // eagerly await dependency installation so plugin imports can resolve.
+    if (agentId === "opentoad") {
+      const pluginDir = join(process.cwd(), ".opencode", "plugin");
+      const hasPlugins =
+        existsSync(pluginDir) && readdirSync(pluginDir).some((f) => /\.[jt]sx?$/.test(f));
+      if (hasPlugins && toolState.dependencyInstallation?.promise) {
+        log.info(
+          "» .opencode/plugin/ detected — awaiting dependency installation before agent start"
+        );
+        await toolState.dependencyInstallation.promise.catch(() => {});
+        timer.checkpoint("awaitDepsForPlugins");
+      }
+    }
+
     // run agent, optionally with timeout enforcement
     activityTimeout = createProcessOutputActivityTimeout({
       timeoutMs: DEFAULT_ACTIVITY_TIMEOUT_MS,
@@ -460,9 +477,12 @@ export async function main(): Promise<MainResult> {
     killTrackedChildren();
     log.error(errorMessage);
 
-    // best-effort summary — don't mask the original error
+    // best-effort summary — write the error so it's visible in the Actions summary tab
     try {
-      await writeJobSummary(toolState);
+      const errorSummary = `### ❌ Pullfrog failed\n\n\`\`\`\n${errorMessage}\n\`\`\``;
+      const usageSummary = formatUsageSummary(toolState.usageEntries);
+      const parts = [errorSummary, toolState.lastProgressBody, usageSummary].filter(Boolean);
+      await writeSummary(parts.join("\n\n"));
     } catch {}
 
     try {

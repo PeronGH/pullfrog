@@ -65,7 +65,7 @@ function detectSandboxMethod(): SandboxMethod {
     // continue to try sudo
   }
 
-  // try sudo unshare (works on GHA runners)
+  // sudo unshare (works on GHA runners)
   try {
     const result = spawnSync("sudo", ["unshare", "--pid", "--fork", "--mount-proc", "true"], {
       timeout: 5000,
@@ -81,7 +81,7 @@ function detectSandboxMethod(): SandboxMethod {
   }
 
   detectedSandboxMethod = "none";
-  log.info("PID namespace isolation not available - falling back to env filtering only");
+  log.info("PID namespace isolation not available");
   return "none";
 }
 
@@ -97,6 +97,13 @@ const PROC_CLEANUP =
 function spawnShell(params: SpawnParams): ChildProcess {
   const spawnOpts = { env: params.env, cwd: params.cwd, stdio: params.stdio, detached: true };
   const sandboxMethod = detectSandboxMethod();
+  const ci = process.env.CI === "true";
+
+  if (ci && sandboxMethod === "none") {
+    throw new Error(
+      "pid namespace isolation is required in CI but unavailable (both unshare and sudo unshare failed)"
+    );
+  }
 
   if (sandboxMethod === "unshare") {
     return spawn(
