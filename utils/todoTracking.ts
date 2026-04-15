@@ -58,7 +58,7 @@ export type TodoTracker = {
   settled: () => Promise<void>;
   /** mark in-progress items as completed (for final snapshot before review/progress post) */
   completeInProgress: () => void;
-  renderCollapsible: () => string;
+  renderCollapsible: (options?: { completeInProgress?: boolean }) => string;
   readonly enabled: boolean;
   /** true after the tracker has successfully called onUpdate at least once */
   readonly hasPublished: boolean;
@@ -143,9 +143,14 @@ export function createTodoTracker(onUpdate: (body: string) => Promise<void>): To
       }
     },
 
-    renderCollapsible(): string {
+    renderCollapsible(options?: { completeInProgress?: boolean }): string {
       if (state.size === 0) return "";
-      const todos = Array.from(state.values());
+      const shouldCompleteInProgress = options?.completeInProgress === true;
+      const todos = Array.from(state.values()).map((item) =>
+        shouldCompleteInProgress && item.status === "in_progress"
+          ? { ...item, status: "completed" as const }
+          : item
+      );
       const completed = todos.filter((t) => t.status === "completed").length;
       const markdown = renderTodoMarkdown(todos);
       return `<details>\n<summary>Task list (${completed}/${todos.length} completed)</summary>\n\n${markdown}\n\n</details>`;
