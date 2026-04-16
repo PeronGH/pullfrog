@@ -86,7 +86,7 @@ export const providers = {
       },
       "gpt-codex-mini": {
         displayName: "GPT Codex Mini",
-        resolve: "openai/codex-mini-latest",
+        resolve: "openai/gpt-5.1-codex-mini",
         openRouterResolve: "openrouter/openai/gpt-5.1-codex-mini",
       },
       o3: {

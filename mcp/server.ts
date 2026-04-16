@@ -149,6 +149,10 @@ export interface ToolContext {
   jobId: string | undefined;
   mcpServerUrl: string;
   tmpdir: string;
+  // resolved upstream model specifier (e.g. "google/gemini-3.1-pro-preview").
+  // undefined when payload.proxyModel is set or when the alias is unresolvable.
+  // used by the schema sanitizer to detect Gemini-routed traffic.
+  resolvedModel: string | undefined;
 }
 
 const mcpPortStart = 3764;

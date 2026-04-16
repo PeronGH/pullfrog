@@ -343,6 +343,7 @@ export async function main(): Promise<MainResult> {
       jobId: runInfo.jobId,
       mcpServerUrl: "",
       tmpdir,
+      resolvedModel,
     };
     await using mcpHttpServer = await startMcpHttpServer(toolContext, { outputSchema });
     toolContext.mcpServerUrl = mcpHttpServer.url;

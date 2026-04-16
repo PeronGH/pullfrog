@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { encode as toonEncode } from "@toon-format/toon";
 import type { FastMCP, Tool } from "fastmcp";
 import { formatJsonValue, log } from "../utils/cli.ts";
+import { isGeminiRouted, sanitizeToolForGemini } from "./geminiSanitizer.ts";
 import type { ToolContext } from "./server.ts";
 
 export const tool = <const params>(
@@ -61,9 +62,10 @@ export const execute = <T, R extends Record<string, any> | string>(
   return _fn;
 };
 
-export const addTools = (_ctx: ToolContext, server: FastMCP<any>, tools: Tool<any, any>[]) => {
+export const addTools = (ctx: ToolContext, server: FastMCP<any>, tools: Tool<any, any>[]) => {
+  const shouldSanitize = isGeminiRouted(ctx);
   for (const tool of tools) {
-    server.addTool(tool);
+    server.addTool(shouldSanitize ? sanitizeToolForGemini(tool) : tool);
   }
   return server;
 };
