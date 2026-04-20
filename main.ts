@@ -39,7 +39,7 @@ import { resolveRunContextData } from "./utils/runContextData.ts";
 import { setEnvAllowlist } from "./utils/secrets.ts";
 import { createTempDirectory, setupGit } from "./utils/setup.ts";
 import { killTrackedChildren } from "./utils/subprocess.ts";
-import { parseTimeString, TIMEOUT_DISABLED } from "./utils/time.ts";
+import { resolveTimeoutMs, TIMEOUT_DISABLED } from "./utils/time.ts";
 import { Timer } from "./utils/timer.ts";
 import { createTodoTracker } from "./utils/todoTracking.ts";
 import { getJobToken, resolveTokens } from "./utils/token.ts";
@@ -188,6 +188,7 @@ export async function main(): Promise<MainResult> {
 
   const timer = new Timer();
   let activityTimeout: ActivityTimeout | null = null;
+  let safetyNetTimer: NodeJS.Timeout | undefined;
 
   // parse prompt early to extract progressCommentId for toolState
   const resolvedPromptInput = resolvePromptInput();
@@ -312,11 +313,16 @@ export async function main(): Promise<MainResult> {
     });
     timer.checkpoint("git");
 
-    // execute setup lifecycle hook (runs once at initialization)
-    await executeLifecycleHook({
+    // execute setup lifecycle hook (runs once at initialization).
+    // setup is load-bearing — if it fails the rest of the run is in an
+    // undefined state, so upgrade the soft-fail warning to a hard error.
+    const setupHook = await executeLifecycleHook({
       event: "setup",
       script: runContext.repoSettings.setupScript,
     });
+    if (setupHook.warning) {
+      throw new Error(setupHook.warning);
+    }
     timer.checkpoint("lifecycleHooks::setup");
 
     const agentId = agent.name;
@@ -414,6 +420,36 @@ export async function main(): Promise<MainResult> {
     });
     toolState.todoTracker = todoTracker;
 
+    // when the agent subprocess is killed for inner activity timeout, stop
+    // the MCP HTTP server so mcp-proxy's SSE reconnect attempts don't keep
+    // the outer activity timer alive. start a short safety-net timer — if
+    // the agent promise hasn't resolved within 5min after the inner kill,
+    // force-reject the outer timer so the run can exit.
+    let innerTimeoutFired = false;
+    const onInnerActivityTimeout = () => {
+      if (innerTimeoutFired) return;
+      innerTimeoutFired = true;
+      log.info(
+        "» inner activity timeout fired — stopping MCP server and starting 5min safety-net timer"
+      );
+      // fire and forget — the server's dispose is idempotent so the
+      // `await using` cleanup at block exit is still safe.
+      mcpHttpServer[Symbol.asyncDispose]().catch((err) => {
+        log.debug(
+          `mcp server stop after inner kill failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+      safetyNetTimer = setTimeout(
+        () => {
+          activityTimeout?.forceReject(
+            "agent still pending 5min after inner activity kill — forcing exit"
+          );
+        },
+        5 * 60 * 1000
+      );
+      safetyNetTimer.unref?.();
+    };
+
     const agentPromise = agent.run({
       payload,
       resolvedModel,
@@ -421,6 +457,7 @@ export async function main(): Promise<MainResult> {
       tmpdir,
       instructions,
       todoTracker,
+      onActivityTimeout: onInnerActivityTimeout,
       onToolUse: (event) => {
         const wasTracked = recordDiffReadFromToolUse({
           state: toolState.diffCoverage,
@@ -435,6 +472,14 @@ export async function main(): Promise<MainResult> {
         );
       },
     });
+    // symmetric with the activityTimeout/timeoutPromise catches below: if a
+    // timeout wins the race, agentPromise is stranded and its later rejection
+    // becomes an unhandled rejection. node 15+ terminates the process on
+    // unhandled rejection by default, which would kill main() mid-cleanup and
+    // lose the error-reporting / usage-summary work that follows. the race
+    // still sees the rejection (the original promise is shared); this catch
+    // only keeps node from treating a post-race rejection as unobserved.
+    agentPromise.catch(() => {});
 
     // timeout enforcement: default is 1 hour, but can be overridden via flags in the prompt:
     // - --timeout=2h (or any duration like "--timeout=30m", "--timeout=1h30m") to set a custom timeout
@@ -443,12 +488,16 @@ export async function main(): Promise<MainResult> {
     if (payload.timeout === TIMEOUT_DISABLED) {
       result = await Promise.race([agentPromise, activityTimeout.promise]);
     } else {
-      const parsed = payload.timeout ? parseTimeString(payload.timeout) : null;
-      if (payload.timeout && parsed === null) {
-        log.warning(`invalid timeout format "${payload.timeout}", using default 1h`);
+      // resolveTimeoutMs rejects unparseable / zero / setTimeout-overflow inputs
+      // so a bad string can't silently resolve to an instant timeout. fall back
+      // to the 1h default with a warning — users who want runtime measured in
+      // weeks should use --notimeout.
+      const usable = resolveTimeoutMs(payload.timeout);
+      if (payload.timeout && usable === null) {
+        log.warning(`invalid timeout "${payload.timeout}" (use --notimeout to disable), using 1h`);
       }
-      const timeoutMs = parsed ?? 3600000;
-      const actualTimeout = parsed !== null ? payload.timeout : "1h";
+      const timeoutMs = usable ?? 3600000;
+      const actualTimeout = usable !== null ? payload.timeout : "1h";
       let timeoutId: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -561,8 +610,18 @@ export async function main(): Promise<MainResult> {
     };
   } finally {
     activityTimeout?.stop();
+    if (safetyNetTimer) clearTimeout(safetyNetTimer);
     if (usageSummaryPath) {
-      await writeGitHubUsageSummaryToFile(usageSummaryPath);
+      // a write error here (ENOSPC, EACCES, dirname removed) must not mask
+      // either the try's successful return or the catch's error return.
+      // the summary is informational — log and move on.
+      try {
+        await writeGitHubUsageSummaryToFile(usageSummaryPath);
+      } catch (err) {
+        log.debug(
+          `failed to write usage summary to ${usageSummaryPath}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   }
 }

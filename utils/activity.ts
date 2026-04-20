@@ -1,8 +1,52 @@
 import { performance } from "node:perf_hooks";
-import { log } from "./log.ts";
+
+function isMonitorDebugEnabled(): boolean {
+  return (
+    process.env.ACTIONS_STEP_DEBUG === "true" ||
+    process.env.RUNNER_DEBUG === "1" ||
+    process.env.LOG_LEVEL === "debug"
+  );
+}
 
 export const DEFAULT_ACTIVITY_TIMEOUT_MS = 300_000;
 export const DEFAULT_ACTIVITY_CHECK_INTERVAL_MS = 5_000;
+
+/**
+ * chunks whose every non-empty line matches one of these patterns do not
+ * count as agent activity. mcp-proxy SSE reconnects and provider-error
+ * retries happen on their own schedule and were keeping the outer activity
+ * timer alive long after the agent subprocess had been killed for inactivity,
+ * producing multi-hour zombie runs.
+ *
+ * both patterns anchor to the start of the (optionally debug-timestamped)
+ * log line so they don't accidentally match agent output that happens to
+ * mention "[mcp-proxy]" or "provider error detected" in analysis text.
+ */
+const DEBUG_TS_PREFIX = /^(?:\[\d{4}-\d{2}-\d{2}T[^\]]+\]\s+)?/.source;
+// our own internal monitors (this file's bypass + subprocess.ts's spawn
+// activity timer) emit high-frequency diagnostic logs when debug logging is
+// enabled. in the past those lines reached the wrapped process.stdout.write,
+// missed the noise check, and marked activity every interval — which in
+// debug-enabled runs kept the outer timer alive after the agent subprocess
+// was already dead, re-creating the #12 zombie-run bug. the `(?:spawn|process)
+// activity ` patterns below explicitly filter our own diagnostic lines in both
+// local-debug (`[DEBUG] …`) and GH-runner-debug (`::debug::…`) formats.
+export const ACTIVITY_NOISE_PATTERNS: readonly RegExp[] = [
+  new RegExp(`${DEBUG_TS_PREFIX}\\[mcp-proxy\\]`),
+  new RegExp(`${DEBUG_TS_PREFIX}» provider error detected`),
+  new RegExp(`${DEBUG_TS_PREFIX}\\[DEBUG\\]\\s+(?:spawn|process) activity `),
+  /^::debug::(?:spawn|process) activity /,
+];
+
+export function isActivityNoise(chunk: string | Uint8Array): boolean {
+  const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+  if (!text.trim()) return true;
+  return text.split("\n").every((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    return ACTIVITY_NOISE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  });
+}
 
 type ActivityTimeoutContext = {
   timeoutMs: number;
@@ -12,6 +56,8 @@ type ActivityTimeoutContext = {
 export type ActivityTimeout = {
   promise: Promise<never>;
   stop: () => void;
+  /** force the timeout to reject immediately with a custom reason */
+  forceReject: (reason: string) => void;
 };
 
 type OutputMonitorContext = {
@@ -54,7 +100,9 @@ function wrapWrite(original: WriteFunction, onActivity: () => void): WriteFuncti
     encodingOrCb?: BufferEncoding | WriteCallback,
     cb?: WriteCallback
   ): boolean => {
-    onActivity();
+    if (!isActivityNoise(chunk)) {
+      onActivity();
+    }
     if (typeof encodingOrCb === "function") {
       return original(chunk, encodingOrCb);
     }
@@ -73,11 +121,22 @@ function startProcessOutputMonitor(ctx: OutputMonitorContext): OutputMonitor {
   process.stdout.write = wrapWrite(originalStdoutWrite, markActivity);
   process.stderr.write = wrapWrite(originalStderrWrite, markActivity);
 
-  log.debug(`process activity monitor started: timeout=${ctx.timeoutMs}ms`);
+  // route the monitor's own diagnostics through the captured original write
+  // instead of log.debug — otherwise those lines feed back through the
+  // wrapped process.stdout.write, miss isActivityNoise, and call
+  // markActivity() themselves. in debug mode the periodic check below would
+  // then reset the timer every interval and the timeout would never fire,
+  // re-creating the exact zombie-run bug #12 was meant to kill.
+  const debugBypass = (msg: string): void => {
+    if (!isMonitorDebugEnabled()) return;
+    originalStdoutWrite(`[${new Date().toISOString()}] [DEBUG] ${msg}\n`);
+  };
+
+  debugBypass(`process activity monitor started: timeout=${ctx.timeoutMs}ms`);
 
   const intervalId = setInterval(() => {
     const idleMs = getIdleMs();
-    log.debug(`process activity check: idle=${idleMs}ms / ${ctx.timeoutMs}ms`);
+    debugBypass(`process activity check: idle=${idleMs}ms / ${ctx.timeoutMs}ms`);
     if (timedOut || idleMs <= ctx.timeoutMs) return;
     timedOut = true;
     ctx.onTimeout(idleMs);
@@ -110,12 +169,26 @@ export function createProcessOutputActivityTimeout(ctx: ActivityTimeoutContext):
       if (monitor) {
         monitor.stop();
       }
-      rejectFn(new Error(`activity timeout: no output for ${idleSec}s`));
+      const reject = rejectFn;
+      rejectFn = null;
+      reject(new Error(`activity timeout: no output for ${idleSec}s`));
     },
   });
 
   return {
     promise,
-    stop: monitor.stop,
+    // stop() also disarms forceReject so a late safety-net fire can't reject
+    // the promise after the run has already succeeded.
+    stop: () => {
+      monitor?.stop();
+      rejectFn = null;
+    },
+    forceReject: (reason: string) => {
+      if (!rejectFn) return;
+      monitor?.stop();
+      const reject = rejectFn;
+      rejectFn = null;
+      reject(new Error(reason));
+    },
   };
 }

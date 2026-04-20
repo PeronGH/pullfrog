@@ -59,8 +59,12 @@ export function countLines(params: { content: string }): number {
 export function parseDiffTocEntries(params: { toc: string }): DiffTocEntry[] {
   const lines = params.toc.split("\n");
   const entries: DiffTocEntry[] = [];
+  // production TOC lines (see formatFilesWithLineNumbers in checkout.ts) append
+  // ` · diff-<sha256>` so the agent has the GitHub "Files Changed" anchor
+  // precomputed. accept that suffix optionally so we also parse the shorter
+  // shape used in tests and in reviewComments.
   for (const line of lines) {
-    const match = line.match(/^- (.+) (?:→|->) lines (\d+)-(\d+)$/);
+    const match = line.match(/^- (.+) (?:→|->) lines (\d+)-(\d+)(?: · diff-[0-9a-f]+)?$/);
     if (!match) continue;
     const startLine = Number.parseInt(match[2], 10);
     const endLine = Number.parseInt(match[3], 10);

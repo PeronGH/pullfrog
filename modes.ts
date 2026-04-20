@@ -50,7 +50,7 @@ GitHub's markdown parser requires a blank line between ALL block-level elements.
 Rules:
 - \`##\` titles and key-change bullet lead-ins are plain-language summaries; backtick only actual code tokens (files, types, functions) where they appear in the title
 - ALL variable names, identifiers, and file names in body text must be in backticks
-- ALL file references MUST link to the PR Files Changed view. Compute anchors by running \`echo -n 'path/to/file.ts' | sha256sum\` via shell for each file. NEVER fabricate hex strings — run the actual command. If shell is unavailable, omit the #diff- anchor rather than guessing.
+- ALL file references MUST link to the PR Files Changed view. Use the \`diff-<hex>\` anchor precomputed next to each filename in the \`checkout_pr\` TOC — do NOT run \`sha256sum\` or any other shell command to compute anchors. NEVER fabricate hex strings. If a file is not in the TOC, omit the \`#diff-\` anchor rather than guessing.
 - Add <br/> before each ## heading for visual spacing. Do NOT use horizontal rules (---)
 - Do NOT include raw diff stats like '+123 / -45' or line counts
 - Do NOT include code blocks or repeat diff contents

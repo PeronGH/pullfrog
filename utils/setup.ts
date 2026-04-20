@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,78 @@ export function setupTestRepo(options: SetupOptions): void {
   } else {
     $("git", ["clone", `git@github.com:${repo}.git`, tempDir]);
   }
+}
+
+/**
+ * build an env suitable for targeting a specific git repo via `cwd`.
+ *
+ * inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE override cwd resolution,
+ * which matters when this code runs as a child of `git push` (pre-push hook)
+ * or inside another git subcommand. if we don't strip them, a call that
+ * names `repoDir` in cwd silently operates on the outer repo instead.
+ */
+function envScopedToRepo(): NodeJS.ProcessEnv {
+  const scoped = { ...process.env };
+  for (const key of Object.keys(scoped)) {
+    if (key.startsWith("GIT_")) delete scoped[key];
+  }
+  return scoped;
+}
+
+/**
+ * remove any `[includeIf ...]` entries from the local git config so that
+ * actions/checkout-persisted credentials don't ride alongside ASKPASS-provided
+ * auth for subsequent git operations.
+ *
+ * SECURITY: git config subsection values can contain arbitrary characters
+ * including `$(...)` command substitutions, and `${IFS}` spacing tricks defeat
+ * naive split-on-space filtering. we read keys via the `-z` (null-terminated)
+ * output format and feed them to a spawn-array `git config --unset-all` so
+ * the shell never interpolates key contents — closing the RCE path that a
+ * string-interpolated `execSync(...)` would expose.
+ */
+export function removeIncludeIfEntries(repoDir: string): void {
+  const env = envScopedToRepo();
+  let configOutput: string;
+  try {
+    configOutput = execSync("git config --local --get-regexp -z ^includeif\\.", {
+      cwd: repoDir,
+      encoding: "utf-8",
+      stdio: "pipe",
+      env,
+    });
+  } catch {
+    log.debug("» no includeIf credential entries to remove");
+    return;
+  }
+  const seen = new Set<string>();
+  for (const entry of configOutput.split("\0")) {
+    if (!entry) continue;
+    // -z format: each entry is "<key>\n<value>". the key is up to the first newline.
+    const nl = entry.indexOf("\n");
+    const key = nl === -1 ? entry : entry.slice(0, nl);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    try {
+      // execFileSync (not execSync) so the key — which can contain arbitrary
+      // characters including shell metacharacters and $() command substitutions
+      // — is passed as an argv element and never interpolated by a shell.
+      // this is the load-bearing side of a9aa3b2b's injection fix.
+      execFileSync("git", ["config", "--local", "--unset-all", key], {
+        cwd: repoDir,
+        stdio: "pipe",
+        env,
+      });
+    } catch (error) {
+      log.debug(
+        `» failed to unset ${key}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  if (seen.size > 0)
+    log.info(
+      `» removed ${seen.size} includeIf credential ${seen.size === 1 ? "entry" : "entries"}`
+    );
 }
 
 export interface GitContext {
@@ -136,24 +208,7 @@ export async function setupGit(params: SetupGitParams): Promise<void> {
   // v6 stores credentials in an external file loaded via includeIf.gitdir, which our
   // --unset-all above doesn't catch. without this, stale credentials from actions/checkout
   // would be sent alongside ASKPASS-provided credentials.
-  try {
-    const configOutput = execSync("git config --local --get-regexp ^includeif\\.", {
-      cwd: repoDir,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-    for (const line of configOutput.trim().split("\n")) {
-      const key = line.split(" ")[0];
-      if (!key) continue;
-      execSync(`git config --local --unset "${key}"`, {
-        cwd: repoDir,
-        stdio: "pipe",
-      });
-    }
-    log.info("» removed includeIf credential entries");
-  } catch {
-    log.debug("» no includeIf credential entries to remove");
-  }
+  removeIncludeIfEntries(repoDir);
 
   // SECURITY: set origin URL without token - auth is injected via GIT_ASKPASS
   // in $git() calls. this prevents token leakage to git hooks and subprocesses.

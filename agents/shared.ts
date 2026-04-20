@@ -71,6 +71,12 @@ export interface AgentRunContext {
   tmpdir: string;
   instructions: ResolvedInstructions;
   todoTracker?: TodoTracker | undefined;
+  /**
+   * called synchronously when the agent subprocess is killed for inner
+   * activity timeout. lets main.ts tear down shared resources (MCP HTTP
+   * server) so lingering SSE reconnects don't keep the outer timer alive.
+   */
+  onActivityTimeout?: (() => void) | undefined;
   onToolUse?: ((event: AgentToolUseEvent) => void) | undefined;
 }
 

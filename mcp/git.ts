@@ -57,6 +57,73 @@ function normalizeUrl(url: string): string {
   return url.replace(/\.git$/, "").toLowerCase();
 }
 
+// SECURITY: reject refs/branch names that begin with "-". git's parseopt
+// accepts options intermixed with positional args, so a ref like
+// "--upload-pack=evil" could be interpreted as a flag rather than a refspec.
+export function rejectIfLeadingDash(value: string, kind: string): void {
+  if (value.startsWith("-")) {
+    throw new Error(`Blocked: ${kind} '${value}' starts with '-' — git could parse it as a flag.`);
+  }
+}
+
+// SECURITY: branch inputs to push/delete must be bare branch names. a branch
+// name like "refs/heads/main" bypasses the restricted-mode default-branch
+// check below (which does exact-string compare against "main"), and symbolic
+// refs (HEAD / FETCH_HEAD / ORIG_HEAD / MERGE_HEAD) would resolve to
+// whatever commit those refs point at — both routes let an agent push to
+// protected branches even under push: restricted. checkout_pr only ever
+// stores bare names like "pr-123", so nothing legitimate relies on the
+// refs/... form here.
+const SYMBOLIC_REFS = new Set(["HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"]);
+export function rejectSpecialRef(value: string, kind: string): void {
+  rejectIfLeadingDash(value, kind);
+  if (value.startsWith("refs/")) {
+    throw new Error(
+      `Blocked: ${kind} '${value}' is a fully-qualified ref path. Use a bare branch name (e.g. 'feature/foo' or 'main'), not a 'refs/heads/...' form.`
+    );
+  }
+  if (SYMBOLIC_REFS.has(value)) {
+    throw new Error(
+      `Blocked: ${kind} '${value}' is a git symbolic ref, not a branch name. Pass the resolved branch name (e.g. 'main'), or omit branchName to push the current branch.`
+    );
+  }
+  // SECURITY: git interprets ':' and leading '+' as refspec syntax, not as
+  // part of a branch name. without this check, an agent under push:restricted
+  // can smuggle a full refspec through branchName:
+  //   - "evil:refs/heads/main"  → pushes local 'evil' to remote main
+  //   - ":refs/heads/main"      → deletes remote main
+  //   - ":other"                → deletes remote 'other' under push:restricted
+  //   - "+main"                 → force-push refspec
+  // the default-branch guard downstream is an exact-string compare, so any
+  // character that lets git parse the value as <src>:<dst> (or as a force
+  // prefix) bypasses it. git's own check-ref-format forbids ':', '+', '^',
+  // '~', '?', '*', '[', '\\', and whitespace in branch names, so rejecting
+  // them here cannot false-positive against a legitimate branch name.
+  const BAD = /[:+^~?*[\\\s]/;
+  const badMatch = value.match(BAD);
+  if (badMatch) {
+    throw new Error(
+      `Blocked: ${kind} '${value}' contains '${badMatch[0]}', which git interprets as refspec/revision syntax, not as part of a branch name.`
+    );
+  }
+}
+
+// SECURITY: validate tag names so the push_tags refspec can't be split into
+// a <src>:<dst> refspec that targets a non-tag ref. without this, a tag like
+// "foo:refs/heads/main" becomes "refs/tags/foo:refs/heads/main" and git
+// pushes the local tag's commit to remote main — a back door around the
+// branch-push rules in push_branch. keep the allow-list conservative (git's
+// own check-ref-format forbids far more, but we only need enough to block
+// refspec injection).
+export function validateTagName(tag: string): void {
+  rejectIfLeadingDash(tag, "tag");
+  if (!/^[A-Za-z0-9._/-]+$/.test(tag)) {
+    throw new Error(
+      `Blocked: tag '${tag}' contains characters that could be parsed as a refspec or flag. Tags must match [A-Za-z0-9._/-]+.`
+    );
+  }
+}
+
 /**
  * validate that the push destination matches expected URL.
  * pushUrl is set by setupGit (base repo) and updated by checkout_pr (fork repo).
@@ -106,6 +173,11 @@ export function PushBranchTool(ctx: ToolContext) {
       }
 
       const branch = branchName || $("git", ["rev-parse", "--abbrev-ref", "HEAD"], { log: false });
+      // check the resolved branch too — rev-parse could surface a weird current
+      // branch name that would otherwise bypass the user-facing check. use
+      // rejectSpecialRef so "refs/heads/main" and symbolic refs like HEAD
+      // can't slip past the default-branch guard below.
+      rejectSpecialRef(branch, "branch");
 
       // reject push if working tree is dirty — forces agent to commit or discard before pushing
       const status = $("git", ["status", "--porcelain"], { log: false });
@@ -134,7 +206,28 @@ export function PushBranchTool(ctx: ToolContext) {
         ? ["--force", "-u", pushDest.remoteName, refspec]
         : ["-u", pushDest.remoteName, refspec];
 
-      await executeLifecycleHook({ event: "prepush", script: ctx.prepushScript });
+      // prepush failure should block the push — a passing hook is the gate
+      // that protects main from bad pushes.
+      const prepushHook = await executeLifecycleHook({
+        event: "prepush",
+        script: ctx.prepushScript,
+      });
+      if (prepushHook.warning) {
+        throw new Error(prepushHook.warning);
+      }
+
+      // re-verify clean working tree after prepush. a hook that writes tracked
+      // files (formatter, type generator, build artifacts) would leave those
+      // changes uncommitted — pushing now would silently drop them, and the
+      // agent would report a "successful push" of code the hook had expected
+      // to be included.
+      const postHookStatus = $("git", ["status", "--porcelain"], { log: false });
+      if (postHookStatus) {
+        throw new Error(
+          `push blocked: the prepush hook modified the working tree. those changes are not included in the push. commit or discard them (or change the hook to not mutate tracked files) before retrying.\n\n` +
+            `git status:\n${postHookStatus}`
+        );
+      }
 
       log.debug(`pushing ${branch} to ${pushDest.remoteName}/${pushDest.remoteBranch}`);
       if (force) {
@@ -148,11 +241,18 @@ export function PushBranchTool(ctx: ToolContext) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("fetch first") || msg.includes("non-fast-forward")) {
+          // git rebase is blocked through the MCP tool when shell is disabled
+          // (rebase --exec can execute arbitrary code). merge always works and
+          // integrates remote changes cleanly, so suggest it as the default.
+          const integrateStep =
+            ctx.payload.shell === "disabled"
+              ? `2. use the git tool to merge the remote branch into yours: git({ command: "merge", args: ["origin/${pushDest.remoteBranch}"] })`
+              : `2. use the git tool to rebase or merge your changes on top: git({ command: "merge", args: ["origin/${pushDest.remoteBranch}"] }) (or 'rebase')`;
           throw new Error(
             `push rejected: the remote branch '${pushDest.remoteBranch}' has new commits you don't have locally.\n\n` +
               `to resolve this:\n` +
               `1. use git_fetch to fetch the remote branch: git_fetch({ ref: "${pushDest.remoteBranch}" })\n` +
-              `2. use the git tool to rebase your changes: git({ subcommand: "rebase", args: ["origin/${pushDest.remoteBranch}"] })\n` +
+              `${integrateStep}\n` +
               `3. resolve any merge conflicts if needed\n` +
               `4. retry push_branch`
           );
@@ -172,11 +272,19 @@ export function PushBranchTool(ctx: ToolContext) {
   });
 }
 
-// commands that require authentication - redirect to dedicated tools
-const AUTH_REQUIRED_REDIRECT: Record<string, string> = {
+// commands that require authentication - redirect to dedicated tools.
+// exported so tests can exercise the same table the runtime uses.
+//
+// note: the `pull` redirect intentionally does not mention `rebase` — under
+// shell=disabled rebase is itself blocked by NOSHELL_BLOCKED_SUBCOMMANDS, so
+// advertising it here would just send the agent into a second block. agents
+// under shell=restricted/enabled who prefer rebase can invoke it directly;
+// the redirect's job is to name the canonical alternative (merge), which
+// works in all modes.
+export const AUTH_REQUIRED_REDIRECT: Record<string, string> = {
   push: "use the push_branch tool instead — it handles authentication and permission checks.",
   fetch: "use the git_fetch tool instead — it handles authentication.",
-  pull: "use git_fetch to fetch the remote ref, then use this git tool with subcommand 'merge' or 'rebase' locally.",
+  pull: "use git_fetch to fetch the remote ref, then call this git tool with command 'merge' locally.",
   clone: "the repository is already cloned. use checkout_pr for PR branches.",
 };
 
@@ -184,7 +292,8 @@ const AUTH_REQUIRED_REDIRECT: Record<string, string> = {
 // in disabled mode the agent has no shell access, so these subcommands are the
 // primary escape vectors for arbitrary code execution. in restricted mode the
 // agent already has shell in a stripped sandbox, so blocking these is redundant.
-const NOSHELL_BLOCKED_SUBCOMMANDS: Record<string, string> = {
+// exported so tests stay in sync with the runtime table.
+export const NOSHELL_BLOCKED_SUBCOMMANDS: Record<string, string> = {
   config: "Blocked: git config can set up filter drivers or hooks that execute arbitrary code.",
   submodule:
     "Blocked: git submodule can reference malicious repositories and execute code on update.",
@@ -193,8 +302,22 @@ const NOSHELL_BLOCKED_SUBCOMMANDS: Record<string, string> = {
   "filter-branch": "Blocked: git filter-branch executes arbitrary code on repository history.",
   replace: "Blocked: git replace can redirect object lookups.",
   // subcommands that accept --exec or similar flags for arbitrary code execution
-  rebase: "Blocked: git rebase --exec can execute arbitrary shell commands.",
-  bisect: "Blocked: git bisect run can execute arbitrary shell commands.",
+  rebase:
+    "Blocked: git rebase --exec can execute arbitrary shell commands. Use 'merge' instead to integrate remote changes.",
+  bisect:
+    "Blocked: git bisect run can execute arbitrary shell commands. Bisect by hand (bisect start/good/bad/reset) is not available through this tool either — ask the user to run the bisect if needed.",
+  // difftool/mergetool exist to shell out to external diff/merge programs.
+  // both accept `--extcmd` / `-x` (difftool) or configured tool commands
+  // (mergetool) that run arbitrary code. NOSHELL_BLOCKED_ARGS catches the
+  // long `--extcmd` form, but not the `-x` short form — and globally blocking
+  // `-x` would false-positive on `git cherry-pick -x`. block the subcommands
+  // wholesale instead; neither has a meaningful use in an automated agent
+  // workflow (agents use `git diff` / `git show` for diffs and resolve
+  // conflicts via file edits, not a TUI merge tool).
+  difftool:
+    "Blocked: git difftool runs an external diff program via --extcmd/-x or configured tool and can execute arbitrary shell commands. Use 'diff' (or 'show' for single commits) to inspect changes — those output directly and don't invoke an external tool.",
+  mergetool:
+    "Blocked: git mergetool runs an external merge program configured via mergetool.<name>.cmd and can execute arbitrary shell commands. Resolve conflicts by editing the files directly (conflict markers are written into the working tree) and then commit.",
 };
 
 // SECURITY: subcommand-specific arg flags that execute code.
@@ -208,8 +331,9 @@ const NOSHELL_BLOCKED_SUBCOMMANDS: Record<string, string> = {
 // the subcommand check (rejecting "-" prefix) already blocks that attack.
 //
 // matched as: arg === flag OR arg starts with flag + "="
-// (avoids false positives like --exclude matching --exec)
-const NOSHELL_BLOCKED_ARGS = ["--exec", "--extcmd", "--upload-pack", "--receive-pack"];
+// (avoids false positives like --exclude matching --exec).
+// exported so tests stay in sync with the runtime flag set.
+export const NOSHELL_BLOCKED_ARGS = ["--exec", "--extcmd", "--upload-pack", "--receive-pack"];
 
 const COLLAPSE_THRESHOLD = 200;
 
@@ -222,7 +346,7 @@ const COLLAPSE_THRESHOLD = 200;
 const subcommandPattern = regex("^[a-z][a-z0-9-]*$");
 
 const Git = type({
-  subcommand: type(subcommandPattern).describe("Git subcommand (e.g., 'status', 'log', 'diff')"),
+  command: type(subcommandPattern).describe("Git command (e.g., 'status', 'log', 'diff')"),
   args: type.string.array().describe("Additional arguments for the git command").optional(),
 });
 
@@ -230,22 +354,23 @@ export function GitTool(ctx: ToolContext) {
   return tool({
     name: "git",
     description:
-      "Run git commands. For push/fetch/pull, use the dedicated MCP tools instead (push_branch, git_fetch).",
+      "Run git commands. For push/fetch, use the dedicated MCP tools (push_branch, git_fetch). " +
+      "git pull is not available — use git_fetch then this tool with command 'merge'.",
     parameters: Git,
     execute: execute(async (params) => {
-      const subcommand = params.subcommand;
+      const command = params.command;
       const args = params.args ?? [];
 
-      const redirect = AUTH_REQUIRED_REDIRECT[subcommand];
+      const redirect = AUTH_REQUIRED_REDIRECT[command];
       if (redirect) {
-        throw new Error(`git ${subcommand} is not available through this tool — ${redirect}`);
+        throw new Error(`git ${command} is not available through this tool — ${redirect}`);
       }
 
       // SECURITY: block dangerous subcommands when shell is disabled.
       // in restricted mode the agent has shell in a stripped sandbox, so blocking
       // these through the MCP tool is redundant (agent can do it via shell).
       if (ctx.payload.shell === "disabled") {
-        const blocked = NOSHELL_BLOCKED_SUBCOMMANDS[subcommand];
+        const blocked = NOSHELL_BLOCKED_SUBCOMMANDS[command];
         if (blocked) {
           throw new Error(blocked);
         }
@@ -263,10 +388,10 @@ export function GitTool(ctx: ToolContext) {
         }
       }
 
-      const output = $("git", [subcommand, ...args], { log: false });
+      const output = $("git", [command, ...args], { log: false });
       const lineCount = output.split("\n").length;
       if (lineCount > COLLAPSE_THRESHOLD) {
-        log.group(`git ${subcommand} output (${lineCount} lines)`, () => {
+        log.group(`git ${command} output (${lineCount} lines)`, () => {
           log.info(output);
         });
       } else if (output) {
@@ -289,6 +414,7 @@ export function GitFetchTool(ctx: ToolContext) {
     description: "Fetch refs from remote repository. Use this instead of git fetch directly.",
     parameters: GitFetch,
     execute: execute(async (params) => {
+      rejectIfLeadingDash(params.ref, "ref");
       const fetchArgs = ["--no-tags", "origin", params.ref];
       if (params.depth !== undefined) {
         fetchArgs.push(`--depth=${params.depth}`);
@@ -307,10 +433,13 @@ const DeleteBranch = type({
 
 export function DeleteBranchTool(ctx: ToolContext) {
   const pushPermission = ctx.payload.push;
+  const defaultBranch = ctx.repo.data.default_branch || "main";
 
   return tool({
     name: "delete_branch",
-    description: "Delete a remote branch. Requires push: enabled permission.",
+    description:
+      "Delete a remote branch. Requires push: enabled permission. " +
+      "Deletion of the repository's default branch is always blocked regardless of permission mode.",
     parameters: DeleteBranch,
     execute: execute(async (params) => {
       if (pushPermission !== "enabled") {
@@ -320,7 +449,31 @@ export function DeleteBranchTool(ctx: ToolContext) {
         );
       }
 
-      await $git("push", ["origin", "--delete", params.branchName], {
+      // delete_branch is already gated on push: enabled, but also block the
+      // refs/heads/... and symbolic-ref forms so this tool can't be tricked
+      // into deleting a protected ref that wouldn't match a bare-name check.
+      rejectSpecialRef(params.branchName, "branchName");
+
+      // defense-in-depth: deleting the default branch is catastrophic and
+      // unlike pushing to main it has no easy revert path (GitHub retains
+      // refs for 30 days but restoring requires the reflog or a direct SHA).
+      // push: enabled authorizes pushes, not wholesale removal of the
+      // repository's primary branch. block it locally even if GitHub branch
+      // protection would also reject — some repos disable protection on
+      // default branches and we should not rely on that config for safety.
+      if (params.branchName === defaultBranch) {
+        throw new Error(
+          `Blocked: cannot delete the default branch '${defaultBranch}'. ` +
+            `If you really need to delete or rename it, do it manually via the repository settings.`
+        );
+      }
+
+      // use refs/heads/<name> explicitly so a same-named tag can't be deleted
+      // by accident. `push --delete <bare-name>` resolves against both remote
+      // branches and tags; a tag-only match would silently remove the tag.
+      // rejectSpecialRef guarantees branchName is a bare name, so the
+      // branchName construction here can't collide with user-supplied refs.
+      await $git("push", ["origin", "--delete", `refs/heads/${params.branchName}`], {
         token: ctx.gitToken,
       });
       return { success: true, deleted: params.branchName };
@@ -348,6 +501,7 @@ export function PushTagsTool(ctx: ToolContext) {
         );
       }
 
+      validateTagName(params.tag);
       const pushArgs = [...(params.force ? ["-f"] : []), "origin", `refs/tags/${params.tag}`];
       await $git("push", pushArgs, {
         token: ctx.gitToken,

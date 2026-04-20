@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDiffCoverageState,
   getDiffCoverageBreakdown,
+  parseDiffTocEntries,
   recordDiffReadFromToolUse,
 } from "./diffCoverage.ts";
 
@@ -81,6 +82,20 @@ describe("diff coverage line checker", () => {
     expect(tracked).toBe(true);
     const breakdown = getDiffCoverageBreakdown({ state });
     expect(breakdown.coveredRanges).toEqual([{ startLine: 29, endLine: 30 }]);
+  });
+
+  it("parses TOC lines that include the ` · diff-<sha256>` anchor emitted by checkout_pr", () => {
+    const productionToc = `## Files (2)
+- src/format.ts → lines 9-32 · diff-41c7b3ac268a3a1ae5c7be92f1230f600013b7170e44a693570ccbdb183ea36b
+- test/math.test.ts → lines 81-93 · diff-44b3f515a5c787743d239052db11d740d691e8bef711c2427bb2b9752a4103a9
+
+---
+`;
+    const entries = parseDiffTocEntries({ toc: productionToc });
+    expect(entries).toEqual([
+      { filename: "src/format.ts", startLine: 9, endLine: 32 },
+      { filename: "test/math.test.ts", startLine: 81, endLine: 93 },
+    ]);
   });
 
   it("computes per-file unread ranges from tracked reads", () => {

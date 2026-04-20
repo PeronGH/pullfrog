@@ -240,7 +240,7 @@ MCP servers provide tools you can call. Inspect your available MCP servers at st
 
 ### Git
 
-Use \`${t("git")}\` for local git commands (status, log, diff, add, commit, checkout, branch, merge, etc.). For operations requiring remote authentication, use the dedicated MCP tools:
+Use \`${t("git")}\` for local git commands (status, log, add, commit, checkout, branch, merge, etc.). When reviewing a PR, do NOT re-derive the PR diff via \`git diff <base>..<head>\` — the diffPath returned by \`${t("checkout_pr")}\` is authoritative. \`git log\` and \`git diff --stat\` are fine for commit-range overview; \`git diff\` / \`git diff --cached\` are fine for inspecting your *own* uncommitted changes. For operations requiring remote authentication, use the dedicated MCP tools:
 - \`${t("push_branch")}\` - push current or specified branch
 - \`${t("git_fetch")}\` - fetch refs from remote
 - \`${t("checkout_pr")}\` - checkout a PR branch (fetches and configures push for forks)

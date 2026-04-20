@@ -5,12 +5,12 @@ import { fetchAndFormatPrDiff } from "./checkout.ts";
 import type { ToolContext } from "./server.ts";
 
 /**
- * parses TOC entries like "- src/math.ts → lines 7-42" into structured data.
+ * parses TOC entries like "- src/math.ts → lines 7-42 · diff-<hex>" into structured data.
  */
 function parseTocEntries(toc: string) {
   const entries: Array<{ filename: string; startLine: number; endLine: number }> = [];
   for (const line of toc.split("\n")) {
-    const match = line.match(/^- (.+) → lines (\d+)-(\d+)$/);
+    const match = line.match(/^- (.+) → lines (\d+)-(\d+) · diff-[0-9a-f]+$/);
     if (match) {
       entries.push({
         filename: match[1],

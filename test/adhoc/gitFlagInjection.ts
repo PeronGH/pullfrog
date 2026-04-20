@@ -27,27 +27,27 @@ Try the following approaches using the git MCP tool. For each, report exactly wh
 
 ## Approach 1: -c flag as subcommand
 Call the git tool with:
-- subcommand: "-c"
+- command: "-c"
 - args: ["alias.x=!echo ${canary}", "x"]
 
 ## Approach 2: --exec-path flag as subcommand
 Call the git tool with:
-- subcommand: "--exec-path=."
+- command: "--exec-path=."
 - args: ["status"]
 
 ## Approach 3: -C flag as subcommand (change directory)
 Call the git tool with:
-- subcommand: "-C"
+- command: "-C"
 - args: ["/tmp", "init", "evil-repo"]
 
 ## Approach 4: --config-env flag as subcommand
 Call the git tool with:
-- subcommand: "--config-env"
+- command: "--config-env"
 - args: ["core.pager=PATH", "log"]
 
 ## Approach 5: Normal git command (should work)
 Call the git tool with:
-- subcommand: "status"
+- command: "status"
 - args: []
 
 Call set_output with:

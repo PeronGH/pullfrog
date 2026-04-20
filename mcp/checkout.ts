@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
@@ -8,6 +9,8 @@ import { $git } from "../utils/gitAuth.ts";
 import { executeLifecycleHook } from "../utils/lifecycle.ts";
 import { computeIncrementalDiff } from "../utils/rangeDiff.ts";
 import { $ } from "../utils/shell.ts";
+import { rejectIfLeadingDash } from "./git.ts";
+import { commentableLinesForFile } from "./review.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
@@ -16,6 +19,10 @@ type PullFile = RestEndpointMethodTypes["pulls"]["listFiles"]["response"]["data"
 export type FormatFilesResult = {
   content: string;
   toc: string;
+};
+
+export type FetchAndFormatPrDiffResult = FormatFilesResult & {
+  files: PullFile[];
 };
 
 /**
@@ -106,10 +113,15 @@ export function formatFilesWithLineNumbers(files: PullFile[]): FormatFilesResult
     });
   }
 
-  // build TOC
+  // build TOC. each entry includes the precomputed sha256 anchor used in
+  // github PR Files Changed URLs (#diff-<hex>), so the agent never needs to
+  // shell out to sha256sum.
   const tocLines = [`## Files (${files.length})`];
   for (const entry of tocEntries) {
-    tocLines.push(`- ${entry.filename} → lines ${entry.startLine}-${entry.endLine}`);
+    const anchor = createHash("sha256").update(entry.filename).digest("hex");
+    tocLines.push(
+      `- ${entry.filename} → lines ${entry.startLine}-${entry.endLine} · diff-${anchor}`
+    );
   }
   tocLines.push("");
   tocLines.push("---");
@@ -133,6 +145,7 @@ export type CheckoutPrResult = {
   success: true;
   number: number;
   title: string;
+  body: string | null;
   base: string;
   localBranch: string;
   remoteBranch: string;
@@ -143,6 +156,14 @@ export type CheckoutPrResult = {
   diffPath: string;
   incrementalDiffPath?: string | undefined;
   toc: string;
+  commitCount: number;
+  commitLog: string;
+  /** true when commitLog was capped because the PR has more commits than we render */
+  commitLogTruncated: boolean;
+  /** true when commit metadata could not be computed (e.g. base ref unreachable after shallow fetch). commitCount/commitLog are zero/empty in that case, not "no commits". */
+  commitLogUnavailable: boolean;
+  /** non-fatal warning from the post-checkout lifecycle hook, if any */
+  hookWarning?: string | undefined;
   instructions: string;
 };
 
@@ -153,14 +174,14 @@ export type CheckoutPrResult = {
 export async function fetchAndFormatPrDiff(
   ctx: ToolContext,
   pullNumber: number
-): Promise<FormatFilesResult> {
+): Promise<FetchAndFormatPrDiffResult> {
   const files = await ctx.octokit.paginate(ctx.octokit.rest.pulls.listFiles, {
     owner: ctx.repo.owner,
     repo: ctx.repo.name,
     pull_number: pullNumber,
     per_page: 100,
   });
-  return formatFilesWithLineNumbers(files);
+  return { ...formatFilesWithLineNumbers(files), files };
 }
 
 import type { GitContext } from "../utils/setup.ts";
@@ -259,9 +280,21 @@ type CheckoutPrBranchParams = GitContext & {
  * Assumes origin remote is already configured with authentication.
  * Updates toolState.issueNumber, toolState.checkoutSha, and toolState.pushUrl (for fork PRs).
  */
-export async function checkoutPrBranch(pr: PrData, params: CheckoutPrBranchParams): Promise<void> {
+export async function checkoutPrBranch(
+  pr: PrData,
+  params: CheckoutPrBranchParams
+): Promise<{ hookWarning?: string | undefined }> {
   const { octokit, owner, name, gitToken, toolState, beforeSha } = params;
   log.info(`» checking out PR #${pr.number}...`);
+
+  // SECURITY: PR ref names come from GitHub and are attacker-controlled on
+  // forks (the PR author picks headRef freely, and baseRef could be a
+  // maliciously-named branch on the target repo). reject leading-dash names
+  // before they reach any git command — without this, a ref like
+  // "-upload-pack=evil" fed into `git fetch origin <ref>` would be parsed as
+  // a flag, not a refspec.
+  rejectIfLeadingDash(pr.baseRef, "PR base ref");
+  rejectIfLeadingDash(pr.headRef, "PR head ref");
 
   const isFork = pr.headRepoFullName !== pr.baseRepoFullName;
 
@@ -293,7 +326,7 @@ export async function checkoutPrBranch(pr: PrData, params: CheckoutPrBranchParam
 
     // fetch PR branch using pull/{n}/head refspec (works for both fork and same-repo PRs)
     log.debug(`» fetching PR #${pr.number} (${localBranch})...`);
-    await $git("fetch", ["--no-tags", "origin", `pull/${pr.number}/head:${localBranch}`], {
+    await $git("fetch", ["--no-tags", "origin", `+pull/${pr.number}/head:${localBranch}`], {
       token: gitToken,
     });
 
@@ -421,11 +454,14 @@ export async function checkoutPrBranch(pr: PrData, params: CheckoutPrBranchParam
     localBranch,
   };
 
-  // execute post-checkout lifecycle hook
-  await executeLifecycleHook({
+  // execute post-checkout lifecycle hook. soft-fail: surface the warning
+  // to the agent via the tool response instead of throwing, so a flaky or
+  // slightly-broken hook doesn't block checkout entirely.
+  const postCheckoutHook = await executeLifecycleHook({
     event: "post-checkout",
     script: params.postCheckoutScript,
   });
+  return { hookWarning: postCheckoutHook.warning };
 }
 
 export function CheckoutPrTool(ctx: ToolContext) {
@@ -457,7 +493,7 @@ export function CheckoutPrTool(ctx: ToolContext) {
         maintainerCanModify: prResponse.data.maintainer_can_modify,
       };
 
-      await checkoutPrBranch(pr, {
+      const checkoutResult = await checkoutPrBranch(pr, {
         octokit: ctx.octokit,
         owner: ctx.repo.owner,
         name: ctx.repo.name,
@@ -514,16 +550,69 @@ export function CheckoutPrTool(ctx: ToolContext) {
         `» diff coverage initialized: diffPath=${diffPath}, totalLines=${ctx.toolState.diffCoverage.totalLines}, tocEntries=${ctx.toolState.diffCoverage.tocEntries.length}`
       );
 
+      // cache commentable-lines snapshot so review-time validation matches what
+      // GitHub will anchor to (commit_id=checkoutSha), even if the PR is updated
+      // between checkout and review.
+      const cached = new Map<string, ReturnType<typeof commentableLinesForFile>>();
+      for (const file of formatResult.files) {
+        cached.set(file.filename, commentableLinesForFile(file.patch));
+      }
+      ctx.toolState.commentableLinesByFile = cached;
+      ctx.toolState.commentableLinesPullNumber = pull_number;
+      ctx.toolState.commentableLinesCheckoutSha = ctx.toolState.checkoutSha;
+
       const incrementalInstructions = incrementalDiffPath
         ? ` IMPORTANT: incrementalDiffPath contains ONLY the changes since the last reviewed version ` +
           `(computed via range-diff). you MUST read incrementalDiffPath FIRST to understand what changed, ` +
           `then use diffPath for full PR context. do NOT skip the incremental diff.`
         : "";
 
+      // commit metadata relative to the PR base (e.g. main). use origin/<base>
+      // because the local base ref may not exist after a shallow fetch. cap
+      // the log so a PR with thousands of commits doesn't blow up the tool
+      // response. if the base ref can't be resolved (e.g. shallow fetch that
+      // didn't pull down origin/<base>), degrade gracefully rather than
+      // failing the whole checkout_pr call over metadata.
+      const COMMIT_LOG_MAX = 200;
+      const baseRange = `origin/${pr.baseRef}..HEAD`;
+      let commitCount = 0;
+      let commitLog = "";
+      let commitLogUnavailable = false;
+      try {
+        commitCount = parseInt(
+          $("git", ["rev-list", "--count", baseRange], { log: false }).trim() || "0",
+          10
+        );
+        commitLog = $("git", ["log", "--oneline", `--max-count=${COMMIT_LOG_MAX}`, baseRange], {
+          log: false,
+        });
+      } catch (err) {
+        commitLogUnavailable = true;
+        log.debug(
+          `» unable to compute commit metadata for ${baseRange}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      const commitLogTruncated = commitCount > COMMIT_LOG_MAX;
+
+      const hookWarningInstructions = checkoutResult.hookWarning
+        ? ` HOOK WARNING: the post-checkout lifecycle hook reported a non-fatal failure (see hookWarning). ` +
+          `decide whether to retry based on the guidance in that field before proceeding.`
+        : "";
+
+      const commitLogInstructions = commitLogUnavailable
+        ? ` NOTE: commit metadata is partial (base ref unreachable, likely a shallow fetch). ` +
+          `commitCount/commitLog may be 0/empty or incomplete; treat them as "unknown" rather than "no commits", ` +
+          `and use \`git log\` directly if you need the full history.`
+        : commitLogTruncated
+          ? ` NOTE: commitLog was capped at ${COMMIT_LOG_MAX} entries out of ${commitCount} commits; ` +
+            `use \`git log\` directly if you need the full history.`
+          : "";
+
       return {
         success: true,
         number: prResponse.data.number,
         title: prResponse.data.title,
+        body: prResponse.data.body,
         base: pr.baseRef,
         localBranch: `pr-${pull_number}`,
         remoteBranch: `refs/heads/${pr.headRef}`,
@@ -534,15 +623,25 @@ export function CheckoutPrTool(ctx: ToolContext) {
         diffPath,
         incrementalDiffPath,
         toc: formatResult.toc,
+        commitCount,
+        commitLog,
+        commitLogTruncated,
+        commitLogUnavailable,
+        hookWarning: checkoutResult.hookWarning,
         instructions:
           `the diff file at diffPath contains a table of contents (TOC) at the top listing every changed file with its line range. ` +
           `use the TOC line ranges as your checklist and read specific files from the diff instead of reading the entire file. ` +
           `for example, if the TOC says "src/foo.ts → lines 5-42", read lines 5-42 from diffPath to see that file's changes. ` +
+          `review files selectively based on relevance rather than reading everything sequentially. ` +
+          `to inspect the PR's changed files, use diffPath — do NOT run \`git diff <base>..<head>\` to re-derive what's already in diffPath. the formatted diff with line numbers is authoritative. ` +
+          `\`git log\` and \`git diff --stat\` are fine for commit-range overview, and \`git diff\` / \`git diff --cached\` are fine for inspecting *your own* uncommitted changes — but PR review content MUST come from diffPath. ` +
           `before your review is submitted, a one-time coverage pre-flight may error listing unread TOC regions. ` +
           `retry the same create_pull_request_review call to proceed — optionally after reading the listed ranges. the pre-flight will not block again this session. ` +
           `the local branch is 'localBranch' (pr-{number}), not the remote branch name. ` +
           `when pushing, omit branchName to use the current branch. do not use remoteBranch as a local branch name.` +
-          incrementalInstructions,
+          incrementalInstructions +
+          hookWarningInstructions +
+          commitLogInstructions,
       } satisfies CheckoutPrResult;
     }),
   });

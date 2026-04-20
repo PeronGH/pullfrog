@@ -10,6 +10,24 @@ export type TrackChildOptions = {
   killGroup?: boolean;
 };
 
+// sentinel codes for timeout rejections — callers (e.g. lifecycle.ts) use
+// these to distinguish timeouts from other errors without string-matching
+// on the error message, which is fragile to rewording.
+export const SPAWN_TIMEOUT_CODE = "E_SPAWN_TIMEOUT";
+export const SPAWN_ACTIVITY_TIMEOUT_CODE = "E_SPAWN_ACTIVITY_TIMEOUT";
+
+export class SpawnTimeoutError extends Error {
+  readonly code: typeof SPAWN_TIMEOUT_CODE | typeof SPAWN_ACTIVITY_TIMEOUT_CODE;
+  constructor(
+    message: string,
+    code: typeof SPAWN_TIMEOUT_CODE | typeof SPAWN_ACTIVITY_TIMEOUT_CODE
+  ) {
+    super(message);
+    this.name = "SpawnTimeoutError";
+    this.code = code;
+  }
+}
+
 // track all spawned child processes for cleanup on Ctrl+C
 const activeChildren = new Map<ChildProcess, boolean>();
 
@@ -79,6 +97,11 @@ export interface SpawnOptions {
   // activity timeout: kill process if no stdout for this many ms (default: 30s, 0 to disable).
   // only stdout resets the timer — stderr (e.g. provider error retries) does not count as progress.
   activityTimeout?: number;
+  // fired synchronously when the activity timeout kills the process. used by
+  // callers (main.ts) to tear down shared resources like the MCP HTTP server
+  // so that lingering SSE reconnects don't keep the outer activity timer
+  // alive after the subprocess is already dead.
+  onActivityTimeout?: (() => void) | undefined;
   cwd?: string;
   stdio?: ("pipe" | "ignore" | "inherit")[];
   onStdout?: (chunk: string) => void;
@@ -119,10 +142,16 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
     trackChild({ child });
 
     let timeoutId: NodeJS.Timeout | undefined;
+    let sigkillEscalatorId: NodeJS.Timeout | undefined;
     let activityCheckIntervalId: NodeJS.Timeout | undefined;
     let isTimedOut = false;
     let isActivityTimedOut = false;
     let lastActivityTime = performance.now();
+    // idle-ms snapshot taken at the moment the activity timer decides to kill.
+    // we reuse it when composing the SpawnTimeoutError so a final stdout chunk
+    // that races with `close` (and resets lastActivityTime via updateActivity)
+    // can't make the error message contradict the "no output for Ns" log line.
+    let killedAtIdleMs: number | undefined;
 
     // overall timeout
     if (options.timeout) {
@@ -130,7 +159,11 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
         isTimedOut = true;
         child.kill("SIGTERM");
 
-        setTimeout(() => {
+        // track the escalator so a graceful SIGTERM response (close fires
+        // before the 5s elapses) can clear it. without capture, this timer
+        // was orphaned in the event loop and kept node alive for up to 5s
+        // past a timed-out subprocess's clean exit.
+        sigkillEscalatorId = setTimeout(() => {
           if (!child.killed) {
             child.kill("SIGKILL");
           }
@@ -150,12 +183,20 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
         );
         if (idleMs > activityTimeoutMs) {
           isActivityTimedOut = true;
+          killedAtIdleMs = idleMs;
           const idleSec = Math.round(idleMs / 1000);
           log.info(
             `no output for ${idleSec}s from pid=${child.pid} (${options.cmd}), killing process`
           );
           child.kill("SIGKILL");
           clearInterval(activityCheckIntervalId);
+          try {
+            options.onActivityTimeout?.();
+          } catch (err) {
+            log.debug(
+              `spawn onActivityTimeout handler threw: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
         }
       }, DEFAULT_ACTIVITY_CHECK_INTERVAL_MS);
     }
@@ -181,28 +222,55 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
       });
     }
 
-    child.on("close", (exitCode) => {
+    child.on("close", (exitCode, signal) => {
       const durationMs = performance.now() - startTime;
 
       untrackChild(child);
       if (timeoutId) clearTimeout(timeoutId);
+      if (sigkillEscalatorId) clearTimeout(sigkillEscalatorId);
       if (activityCheckIntervalId) clearInterval(activityCheckIntervalId);
 
       if (isTimedOut) {
-        reject(new Error(`process timed out after ${options.timeout}ms`));
+        reject(
+          new SpawnTimeoutError(`process timed out after ${options.timeout}ms`, SPAWN_TIMEOUT_CODE)
+        );
         return;
       }
 
       if (isActivityTimedOut) {
-        const idleSec = Math.round((performance.now() - lastActivityTime) / 1000);
-        reject(new Error(`activity timeout: no output for ${idleSec}s`));
+        // prefer the idle-ms captured when the kill fired (killedAtIdleMs).
+        // recomputing from lastActivityTime here would be wrong if the child
+        // emitted one final stdout chunk between SIGKILL and close — the
+        // chunk's updateActivity() would reset lastActivityTime and the error
+        // would report near-zero idle, contradicting the kill-site log line.
+        const idleMs = killedAtIdleMs ?? performance.now() - lastActivityTime;
+        const idleSec = Math.round(idleMs / 1000);
+        reject(
+          new SpawnTimeoutError(
+            `activity timeout: no output for ${idleSec}s`,
+            SPAWN_ACTIVITY_TIMEOUT_CODE
+          )
+        );
         return;
+      }
+
+      // when a child is killed by signal (OOM, segfault, external SIGTERM),
+      // node delivers (code=null, signal=<name>). without this branch,
+      // `exitCode || 0` coerced null to 0 and lifecycle hooks silently
+      // appeared to succeed when they'd actually been killed — caller
+      // checked `result.exitCode !== 0` and moved on.
+      let resolvedExitCode = exitCode ?? 0;
+      let resolvedStderr = stderrBuffer;
+      if (exitCode === null && signal) {
+        const killMsg = `[spawn] ${options.cmd}: killed by signal ${signal}`;
+        resolvedStderr = resolvedStderr ? `${resolvedStderr}\n${killMsg}` : killMsg;
+        resolvedExitCode = 1;
       }
 
       resolve({
         stdout: stdoutBuffer,
-        stderr: stderrBuffer,
-        exitCode: exitCode || 0,
+        stderr: resolvedStderr,
+        exitCode: resolvedExitCode,
         durationMs,
       });
     });
@@ -212,10 +280,17 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
 
       untrackChild(child);
       if (timeoutId) clearTimeout(timeoutId);
+      if (sigkillEscalatorId) clearTimeout(sigkillEscalatorId);
       if (activityCheckIntervalId) clearInterval(activityCheckIntervalId);
 
-      // log spawn errors for debugging
-      console.error(`[spawn] process spawn error: ${error.message}`);
+      // surface the spawn error in stderr so callers (e.g. lifecycle hook
+      // warnings) don't just see "exit code 1, output: (empty)" when the
+      // command was misspelled, missing, or unexecutable. without this a
+      // user with a bad postCheckout script got an opaque failure, retried
+      // per the guidance, and hit the same wall every run.
+      const errMsg = `[spawn] ${options.cmd}: ${error.message}`;
+      console.error(errMsg);
+      stderrBuffer = stderrBuffer ? `${stderrBuffer}\n${errMsg}` : errMsg;
 
       resolve({
         stdout: stdoutBuffer,

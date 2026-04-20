@@ -22,7 +22,7 @@ import { log } from "../utils/cli.ts";
 import { installFromNpmTarball } from "../utils/install.ts";
 import { detectProviderError } from "../utils/providerErrors.ts";
 import { addSkill } from "../utils/skills.ts";
-import { spawn } from "../utils/subprocess.ts";
+import { SPAWN_ACTIVITY_TIMEOUT_CODE, SpawnTimeoutError, spawn } from "../utils/subprocess.ts";
 import { ThinkingTimer } from "../utils/timer.ts";
 import type { TodoTracker } from "../utils/todoTracking.ts";
 import { getDevDependencyVersion } from "../utils/version.ts";
@@ -257,6 +257,7 @@ type RunParams = {
   cwd: string;
   env: Record<string, string | undefined>;
   todoTracker?: TodoTracker | undefined;
+  onActivityTimeout?: (() => void) | undefined;
   onToolUse?: ((event: { toolName: string; input: unknown }) => void) | undefined;
 };
 
@@ -462,6 +463,7 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
       cwd: params.cwd,
       env: params.env,
       activityTimeout: 300_000,
+      onActivityTimeout: params.onActivityTimeout,
       stdio: ["ignore", "pipe", "pipe"],
       onStdout: async (chunk) => {
         const text = chunk.toString();
@@ -476,33 +478,43 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
           const trimmed = line.trim();
           if (!trimmed) continue;
 
+          let event: OpenCodeEvent;
           try {
-            const event = JSON.parse(trimmed) as OpenCodeEvent;
-            eventCount++;
-            log.debug(JSON.stringify(event, null, 2));
-
-            const timeSinceLastActivity = getIdleMs();
-            if (timeSinceLastActivity > 10000) {
-              const activeToolCalls = toolCallTimings.size;
-              const toolCallInfo =
-                activeToolCalls > 0
-                  ? ` (waiting for ${activeToolCalls} tool call${activeToolCalls > 1 ? "s" : ""})`
-                  : ` (${params.label} may be processing internally - LLM calls, planning, etc.)`;
-              log.info(
-                `» no activity for ${(timeSinceLastActivity / 1000).toFixed(1)}s${toolCallInfo} (${eventCount} events processed so far)`
-              );
-            }
-            markActivity();
-            const handler = handlers[event.type as keyof typeof handlers];
-            if (handler) {
-              await handler(event as never);
-            } else {
-              log.info(
-                `» ${params.label} event (unhandled): type=${event.type}, data=${JSON.stringify(event).substring(0, 500)}`
-              );
-            }
+            event = JSON.parse(trimmed) as OpenCodeEvent;
           } catch {
             log.debug(`» non-JSON stdout line: ${trimmed.substring(0, 200)}`);
+            continue;
+          }
+
+          eventCount++;
+          log.debug(JSON.stringify(event, null, 2));
+
+          const timeSinceLastActivity = getIdleMs();
+          if (timeSinceLastActivity > 10000) {
+            const activeToolCalls = toolCallTimings.size;
+            const toolCallInfo =
+              activeToolCalls > 0
+                ? ` (waiting for ${activeToolCalls} tool call${activeToolCalls > 1 ? "s" : ""})`
+                : ` (${params.label} may be processing internally - LLM calls, planning, etc.)`;
+            log.info(
+              `» no activity for ${(timeSinceLastActivity / 1000).toFixed(1)}s${toolCallInfo} (${eventCount} events processed so far)`
+            );
+          }
+          markActivity();
+
+          const handler = handlers[event.type as keyof typeof handlers];
+          if (!handler) {
+            log.info(
+              `» ${params.label} event (unhandled): type=${event.type}, data=${JSON.stringify(event).substring(0, 500)}`
+            );
+            continue;
+          }
+          try {
+            await handler(event as never);
+          } catch (err) {
+            log.info(
+              `» ${params.label} handler for type=${event.type} threw: ${err instanceof Error ? err.message : String(err)}`
+            );
           }
         }
       },
@@ -585,7 +597,8 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
     params.todoTracker?.cancel();
     const duration = performance.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isActivityTimeout = errorMessage.includes("activity timeout");
+    const isActivityTimeout =
+      error instanceof SpawnTimeoutError && error.code === SPAWN_ACTIVITY_TIMEOUT_CODE;
 
     const stderrContext = recentStderr.slice(-10).join("\n");
     const diagnosis = lastProviderError
@@ -667,6 +680,7 @@ export const opencode = agent({
       cwd: repoDir,
       env,
       todoTracker: ctx.todoTracker,
+      onActivityTimeout: ctx.onActivityTimeout,
       onToolUse: ctx.onToolUse,
     };
 

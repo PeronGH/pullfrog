@@ -2,11 +2,11 @@
 
 exports[`fetchAndFormatPrDiff > generates accurate TOC line numbers for pullfrog/test-repo#1 > content 1`] = `
 "## Files (5)
-- src/format.ts → lines 9-32
-- src/math.ts → lines 33-55
-- src/old-module.ts → lines 56-64
-- src/validate.ts → lines 65-80
-- test/math.test.ts → lines 81-93
+- src/format.ts → lines 9-32 · diff-41c7b3ac268a3a1ae5c7be92f1230f600013b7170e44a693570ccbdb183ea36b
+- src/math.ts → lines 33-55 · diff-9c6e445a719b33e276684bdf95c69e617f0303638d44cf90d61295f2720ecc63
+- src/old-module.ts → lines 56-64 · diff-b02fb28f45ef1227002b260c46ae6b16e080d58f65ed2a035bb58d05e2e2df5c
+- src/validate.ts → lines 65-80 · diff-04b485505a31584d0a838375545a6d1f0044cd9601cd84ed98f75b42a88ea051
+- test/math.test.ts → lines 81-93 · diff-44b3f515a5c787743d239052db11d740d691e8bef711c2427bb2b9752a4103a9
 
 ---
 diff --git a/src/format.ts b/src/format.ts
@@ -98,11 +98,11 @@ diff --git a/test/math.test.ts b/test/math.test.ts
 
 exports[`fetchAndFormatPrDiff > generates accurate TOC line numbers for pullfrog/test-repo#1 > toc 1`] = `
 "## Files (5)
-- src/format.ts → lines 9-32
-- src/math.ts → lines 33-55
-- src/old-module.ts → lines 56-64
-- src/validate.ts → lines 65-80
-- test/math.test.ts → lines 81-93
+- src/format.ts → lines 9-32 · diff-41c7b3ac268a3a1ae5c7be92f1230f600013b7170e44a693570ccbdb183ea36b
+- src/math.ts → lines 33-55 · diff-9c6e445a719b33e276684bdf95c69e617f0303638d44cf90d61295f2720ecc63
+- src/old-module.ts → lines 56-64 · diff-b02fb28f45ef1227002b260c46ae6b16e080d58f65ed2a035bb58d05e2e2df5c
+- src/validate.ts → lines 65-80 · diff-04b485505a31584d0a838375545a6d1f0044cd9601cd84ed98f75b42a88ea051
+- test/math.test.ts → lines 81-93 · diff-44b3f515a5c787743d239052db11d740d691e8bef711c2427bb2b9752a4103a9
 
 ---
 "

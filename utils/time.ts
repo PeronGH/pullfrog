@@ -31,3 +31,29 @@ export function parseTimeString(input: string): number | null {
 export function isValidTimeString(input: string): boolean {
   return parseTimeString(input) !== null;
 }
+
+/**
+ * resolve a user-supplied timeout string into a setTimeout-safe number of
+ * milliseconds, returning null when the input is unusable.
+ *
+ * "unusable" covers three cases that all cause setTimeout to misbehave if
+ * passed through naively:
+ *   - unparseable ("abc", "10x") — parseTimeString returns null.
+ *   - zero ("0m", "0s") — setTimeout fires immediately, so the run would
+ *     look like an insta-fail with the confusing message "timed out after 0m".
+ *   - overflow (e.g. "999h") — node clamps any delay above 2^31-1 ms
+ *     (~24.8 days) to 1 ms, so a user who asked for "596h" or more would
+ *     get a timeout in a single tick instead of the multi-day window they
+ *     requested. user almost certainly meant --notimeout.
+ *
+ * the caller should warn and fall back to its own default when this returns
+ * null; the reason is always "the input can't be honored" regardless of
+ * which branch triggered it.
+ */
+const TIMEOUT_MAX_MS = 2_147_483_647;
+export function resolveTimeoutMs(input: string | undefined): number | null {
+  if (!input) return null;
+  const parsed = parseTimeString(input);
+  if (parsed === null || parsed <= 0 || parsed > TIMEOUT_MAX_MS) return null;
+  return parsed;
+}

@@ -37,6 +37,7 @@ import { UpdateLearningsTool } from "./learnings.ts";
 import { SetOutputTool } from "./output.ts";
 import { CreatePullRequestTool, UpdatePullRequestBodyTool } from "./pr.ts";
 import { PullRequestInfoTool } from "./prInfo.ts";
+import type { CommentableLines } from "./review.ts";
 import { CreatePullRequestReviewTool } from "./review.ts";
 import {
   GetReviewCommentsTool,
@@ -73,6 +74,25 @@ export interface ToolState {
   issueNumber?: number;
   // PR HEAD sha at checkout time — used to detect new commits pushed during a review
   checkoutSha?: string;
+  // commentable lines per file at checkoutSha — captured during checkout_pr so
+  // review-time inline-comment validation matches the diff GitHub will anchor
+  // to (commit_id=checkoutSha). without this, a PR update between checkout and
+  // review would make listFiles (latest HEAD) disagree with the anchor,
+  // silently dropping valid comments or letting invalid ones through.
+  //
+  // commentableLinesPullNumber records WHICH PR this snapshot belongs to. if
+  // the agent checks out PR B and then reviews PR A in the same session, the
+  // cached snapshot for B would silently mis-validate A's comments — keying
+  // by PR number forces a re-fetch when the target changes.
+  //
+  // commentableLinesCheckoutSha pins the snapshot to the SHA it was built
+  // against. if a second checkout_pr for the SAME PR bumps checkoutSha but
+  // fails before repopulating the cache (e.g., listFiles rate-limits), the
+  // stale snapshot would silently mis-validate comments against the new SHA.
+  // comparing both fields forces a re-fetch when either moves.
+  commentableLinesByFile?: Map<string, CommentableLines>;
+  commentableLinesPullNumber?: number;
+  commentableLinesCheckoutSha?: string | undefined;
   // SHA to diff incrementally against — set from event payload on first checkout,
   // then from checkoutSha when review.ts detects new commits mid-review
   beforeSha?: string;
@@ -352,6 +372,11 @@ type McpHttpServerOptions = {
 
 /**
  * Start the MCP HTTP server.
+ *
+ * The returned disposer is idempotent — safe to call multiple times.
+ * Callers (e.g. the inner activity-timeout handler in main.ts) may need to
+ * stop the server before the `await using` block exits; a subsequent
+ * automatic dispose is then a no-op.
  */
 export async function startMcpHttpServer(
   ctx: ToolContext,
@@ -360,9 +385,12 @@ export async function startMcpHttpServer(
   const tools = buildOrchestratorTools(ctx, options?.outputSchema);
   const startResult = await selectMcpPort(ctx, tools);
 
+  let disposed = false;
   return {
     url: startResult.url,
     [Symbol.asyncDispose]: async () => {
+      if (disposed) return;
+      disposed = true;
       closeBrowserDaemon(ctx.toolState);
       await killBackgroundProcesses(ctx.toolState);
       await startResult.server.stop();
