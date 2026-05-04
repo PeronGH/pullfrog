@@ -11,6 +11,7 @@ import {
 } from "../utils/diffCoverage.ts";
 import { fixDoubleEscapedString } from "../utils/fixDoubleEscapedString.ts";
 import { patchWorkflowRunFields } from "../utils/patchWorkflowRunFields.ts";
+import { deleteProgressComment } from "./comment.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
@@ -463,6 +464,17 @@ export function CreatePullRequestReviewTool(ctx: ToolContext) {
         nodeId: reviewNodeId,
         reviewedSha: actuallyReviewedSha,
       };
+
+      // a submitted review obsoletes the progress comment — the review IS the
+      // durable artifact. owned here (not in main.ts) so cleanup is atomic with
+      // submission and survives any path out of the run (success, timeout,
+      // crash). deleteProgressComment sets progressCommentId = null, so a later
+      // report_progress call short-circuits to a no-op.
+      // best-effort: a cleanup failure must not turn a successful review into
+      // a tool-call failure visible to the agent.
+      await deleteProgressComment(ctx).catch((err) => {
+        log.debug(`progress comment cleanup after review failed: ${err}`);
+      });
 
       // detect commits pushed since checkout and guide the agent to review them
       // inline instead of dispatching a separate workflow run

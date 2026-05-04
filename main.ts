@@ -529,20 +529,14 @@ export async function main(): Promise<MainResult> {
     // post-agent review cleanup: reportReviewNodeId → follow-up re-review dispatch.
     // runs after the agent exits so ordering is architecturally guaranteed (no LLM involvement).
     // best-effort: cleanup failures must not turn a successful agent run into a failure.
+    //
+    // note: progress-comment deletion on review submission is owned by
+    // create_pull_request_review (action/mcp/review.ts) and runs atomically
+    // with the submission, so it survives any path out of main (success,
+    // timeout, crash) without relying on cleanup ordering here.
     if (toolContext) {
       await postReviewCleanup(toolContext).catch((error) => {
         log.debug(`post-review cleanup failed: ${error}`);
-      });
-    }
-
-    // review submitted → always delete the progress comment.
-    // the review is the durable artifact; the progress comment is noise.
-    // defense-in-depth: covers the case where the agent calls report_progress
-    // despite mode instructions, which sets finalSummaryWritten and prevents
-    // the stranded-comment heuristic below from firing.
-    if (toolContext && toolState.review && toolState.progressCommentId) {
-      await deleteProgressComment(toolContext).catch((error) => {
-        log.debug(`review progress comment cleanup failed: ${error}`);
       });
     }
 
