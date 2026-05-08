@@ -648,8 +648,8 @@ describe("reviewSkipDecision", () => {
 describe("duplicateReviewDecision", () => {
   // regression: colinhacks/zod#5897 had two reviews submitted from the same
   // workflow run 8 seconds apart — a substantive review followed by an empty
-  // "Reviewed — no issues found." follow-up. the agent re-classified the
-  // first review's non-blocking observations as "no actionable issues" and
+  // "No new issues found." follow-up. the agent re-classified the first
+  // review's non-blocking observations as "no actionable issues" and
   // submitted the canonical body per modes.ts. this guard makes the second
   // call a no-op without burning a GitHub API call or polluting the PR.
 

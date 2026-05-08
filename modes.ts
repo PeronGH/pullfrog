@@ -10,6 +10,12 @@ export interface Mode {
   prompt?: string | undefined;
 }
 
+// Default user-facing summary format embedded in Review mode review bodies.
+// Deliberately scoped to Review (initial PR review). IncrementalReview keeps
+// its own terser bullet-list "Reviewed changes" shape since re-review bodies
+// are deltas, not introductions. Distinct from the agent-internal snapshot
+// (action/utils/prSummary.ts) which has its own stable scaffold and is never
+// shaped by user instructions — see selectMode.ts for the firewall.
 export const PR_SUMMARY_FORMAT = `### Default format
 
 Follow this structure exactly:
@@ -175,7 +181,7 @@ ${learningsStep(t, 6)}`,
 
 2. **triage**: orient yourself on the PR — identify *what kind of thing this is* (domain it touches, seams it crosses, external contracts it depends on, user-facing surfaces it changes). orientation only — defer specific defect-hunting to the subagents; pre-reviewing biases the lenses you pick. use \`${t("get_pull_request")}\` and other read-only GitHub tools for additional context if needed.
 
-   if the PR is **genuinely trivial**, skip steps 3–4 entirely and submit \`Reviewed — no issues found.\` per step 5. there's no value in dispatching even one lens for a typo.
+   if the PR is **genuinely trivial**, skip steps 3–4 entirely and submit a \`No new issues found.\` review per step 5. there's no value in dispatching even one lens for a typo.
 
    "Genuinely trivial" (skip):
    - single-word doc typo, whitespace/format-only, comment-only across any number of files
@@ -243,26 +249,28 @@ ${learningsStep(t, 6)}`,
 
    note: the first create_pull_request_review submission may error with a one-time diff-coverage nudge listing unread TOC regions. retry the same call to proceed — optionally after reading the listed ranges. the pre-flight will not block again this session.
 
+   The review body is structured as: \`[optional alert blockquote]\` → \`[PR summary using the default format below]\`. Inline comments are passed via the \`comments\` parameter, not in the body.
+
    - **critical issues** (blocks merge — bugs, security, data loss):
-     \`approved: false\`. Body begins with a GitHub alert blockquote, e.g.:
-     \`> [!CAUTION]\\n> This PR introduces a race condition in ...\`
-     Follow with a brief summary if needed. Include all inline comments.
+     \`approved: false\`. Body opens with \`> [!CAUTION]\\n> This PR introduces ...\`, followed by the PR summary. Include all inline comments via \`comments\`.
    - **recommended changes** (non-critical):
-     \`approved: false\`. Body begins with a GitHub alert blockquote, e.g.:
-     \`> [!IMPORTANT]\\n> Consider adding input validation for ...\`
-     Follow with a brief summary if needed. Include all inline comments.
+     \`approved: false\`. Body opens with \`> [!IMPORTANT]\\n> Consider ...\`, followed by the PR summary. Include all inline comments via \`comments\`.
    - **no actionable issues**:
-     \`approved: true\`, body: "Reviewed — no issues found."`,
+     \`approved: true\`. Body opens with \`No new issues found.\` followed by the PR summary.
+
+${PR_SUMMARY_FORMAT}`,
     },
     // IncrementalReview shares Review's multi-lens orchestrator pattern but
-    // scopes the target to the incremental diff and adds prior-review-feedback
-    // tracking. The "issues must be NEW since the last Pullfrog review" filter
-    // lives at aggregation time (step 5), NOT in the subagent prompt — pushing
-    // the filter into subagents matches the canonical anneal anti-pattern of
-    // "list known pre-existing failures — don't flag these" and suppresses
-    // signal on regressions the new commits amplified. The body-format rules
-    // (Reviewed changes / Prior review feedback) are unchanged from the prior
-    // version. Same severity-table omission as Review.
+    // scopes the target to the incremental diff. The "issues must be NEW
+    // since the last Pullfrog review" filter lives at aggregation time
+    // (step 5), NOT in the subagent prompt — pushing the filter into
+    // subagents matches the canonical anneal anti-pattern of "list known
+    // pre-existing failures — don't flag these" and suppresses signal on
+    // regressions the new commits amplified. The review body is just
+    // "Reviewed changes" — a separate "Prior review feedback" checklist
+    // would duplicate the rolling PR summary snapshot's record of what
+    // earlier runs already addressed and add noise to the user-facing
+    // body. Same severity-table omission as Review.
     {
       name: "IncrementalReview",
       description:
@@ -273,7 +281,7 @@ ${learningsStep(t, 6)}`,
 
 2. **incremental scope**: if \`incrementalDiffPath\` is present, read it to see what changed since the last review. this is a range-diff that isolates the net changes, filtering out base branch noise. if not present, fall back to reviewing the full PR diff and determine what changed since Pullfrog's most recent review.
 
-3. **prior feedback**: fetch previous reviews via \`${t("list_pull_request_reviews")}\`. for the most recent Pullfrog review, call \`${t("get_review_comments")}\` with the review ID to retrieve specific prior line-level feedback. you'll need this in step 6 to track which prior comments were addressed.
+3. **prior feedback**: fetch previous reviews via \`${t("list_pull_request_reviews")}\`. for the most recent Pullfrog review, call \`${t("get_review_comments")}\` with the review ID to retrieve specific prior line-level feedback. you'll use this to filter your aggregation in step 5 — anything already flagged in a prior review and not changed by the new commits should not be re-raised. you do NOT need to render this in the review body; the rolling PR summary snapshot is the durable record of what's been addressed.
 
 4. **triage & fan out**: orient on the *incremental* changes — domain, seams, external contracts, user-facing surfaces.
 
@@ -302,20 +310,14 @@ ${learningsStep(t, 6)}`,
 
 5. **aggregate, draft, self-critique**: merge findings; de-dup overlaps; trace each finding yourself. drop praise, style preferences, speculative/unverified claims, findings about pre-existing code unrelated to the new commits, anything not actionable, and anything that re-states prior review feedback (heuristic: if the finding's root cause lives in lines the *new commits* added or modified, it's in scope; otherwise drop). also drop **bloat-shaped findings** — proposed fixes that would add defensive checks for cases that can't happen, abstractions used once, comments restating obvious code, tests asserting tautologies, or "just-in-case" guards. subagents are fallible and bias toward recommending changes; the bar for an actionable inline comment is sound + correct + elegant. recommending a change that improves only one of the three (or degrades elegance to nominally improve correctness) makes the codebase worse, not better. To compute "lines the new commits added or modified": if \`incrementalDiffPath\` from step 1 is present, use it directly. Otherwise, take the prior Pullfrog review's \`commit_id\` (returned alongside each entry from \`${t("list_pull_request_reviews")}\` in step 3) and run \`git diff <prior-review-sha>..HEAD\` to isolate the lines added since that review. draft inline comments with NEW line numbers from the full PR diff — every comment must be actionable, 2-3 sentences max.
 
-   then check: which prior review comments were addressed by the new commits? track the addressed ones for step 6b.
+6. **build the review body** — a single "Reviewed changes" section: summarize at the logical-change level, not per-file. each bullet starts with a past-tense verb (e.g. \`- Extracted shared CLI runtime into a single module\`, \`- Renamed package to pullfrog\`). avoid file paths unless they add clarity. if the changes can be described in one sentence, use one sentence — no bullets needed. do NOT include a separate "Prior review feedback" checklist; that's tracked in the rolling PR summary snapshot for the next agent run, and surfacing it in the user-facing body is noise (changes that addressed prior feedback are already covered by the Reviewed-changes bullets). in some cases you may receive a complete diff for the whole pull request instead of an incremental one — when this happens, you will need to determine what changes have happened since Pullfrog's most recent review.
 
-6. **build the review body** — two distinct sections:
-   a. **Reviewed changes**: summarize at the logical-change level, not per-file. each bullet starts with a past-tense verb (e.g. \`- Extracted shared CLI runtime into a single module\`, \`- Renamed package to pullfrog\`). avoid file paths unless they add clarity. if the changes can be described in one sentence, use one sentence — no bullets needed.
-   b. **Prior review feedback** (only if any were addressed): list only the prior review comments that WERE addressed by the new commits (\`- [x] safeParse instead of parse — addressed\`). omit unaddressed comments. omit this entire section if nothing was addressed. a change can appear in both sections.
-   - no headings, no tables, no prose paragraphs in either section — just bullets
-   - in some cases you may receive a complete diff for the whole pull request instead of an incremental one. when this happens, you will need to determine what changes have happened since Pullfrog's most recent review.
-
-7. Submit — Do NOT call \`report_progress\` or \`create_issue_comment\` — the review is the final record and the progress comment will be cleaned up automatically. the review body always includes the reviewed changes from step 6a. append \`Prior review feedback:\\n\` with the checklist from step 6b only if any prior comments were addressed. Follow these rules:
+7. Submit — Do NOT call \`report_progress\` or \`create_issue_comment\` — the review is the final record and the progress comment will be cleaned up automatically. Follow these rules:
    - note: the first create_pull_request_review submission may error with a one-time diff-coverage nudge listing unread TOC regions. retry the same call to proceed — optionally after reading the listed ranges. the pre-flight will not block again this session.
    - IF NO NEW ISSUES, NON-SUBSTANTIVE CHANGES ONLY (trivial formatting, import reordering, comment tweaks): do NOT submit a review. Do NOT call \`report_progress\`. Exit — the progress comment will be cleaned up automatically.
-   - ELSE IF NEW CRITICAL ISSUES (blocks merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with a GitHub alert blockquote (e.g. \`> [!CAUTION]\\n> This PR introduces ...\`), then the reviewed changes summary and prior feedback (if any).
-   - ELSE IF NEW RECOMMENDED CHANGES (non-critical): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!IMPORTANT]\\n> ...\` alert, then the reviewed changes summary and prior feedback (if any).
-   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. body opens with \`No new issues. Reviewed the following changes:\\n\`, then the reviewed changes summary and prior feedback (if any).`,
+   - ELSE IF NEW CRITICAL ISSUES (blocks merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with a GitHub alert blockquote (e.g. \`> [!CAUTION]\\n> This PR introduces ...\`), then the Reviewed-changes summary.
+   - ELSE IF NEW RECOMMENDED CHANGES (non-critical): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!IMPORTANT]\\n> ...\` alert, then the Reviewed-changes summary.
+   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, you can set \`approved: true\`. body opens with \`No new issues. Reviewed the following changes:\\n\`, then the Reviewed-changes summary.`,
     },
     {
       name: "Plan",
@@ -404,19 +406,6 @@ ${learningsStep(t, 6)}`,
    - if the task involved labeling, commenting, or other GitHub operations, perform those directly
 
 ${learningsStep(t, 4)}`,
-    },
-    {
-      name: "Summarize",
-      description:
-        "Summarize a PR with a structured comment that is updated in place on subsequent pushes",
-      prompt: `### Checklist
-
-1. Checkout the PR via \`${t("checkout_pr")}\` — this returns PR metadata and a \`diffPath\`.
-2. Read the diff using the TOC to selectively read relevant sections (not the entire file). Produce a structured summary. If EVENT INSTRUCTIONS specify a custom format, follow that instead of the default format below.
-3. Call \`${t("create_issue_comment")}\` with \`type: "Summary"\` and the summary body.
-4. Call \`${t("report_progress")}\` with a brief note (e.g., "Posted PR summary.").
-
-${PR_SUMMARY_FORMAT}`,
     },
   ];
 }

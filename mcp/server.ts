@@ -128,8 +128,21 @@ export interface ToolState {
   // set by select_mode when Plan + issue_number and plan-comment API returns existing plan (for report_progress target_plan_comment)
   existingPlanCommentId?: number;
   previousPlanBody?: string;
-  // set by select_mode when Summarize mode and summary-comment API returns existing summary
-  existingSummaryCommentId?: number;
+  // absolute path to the PR summary markdown file the agent edits in place.
+  // seeded by main.ts before the agent starts when payload.generateSummary is set;
+  // read back at end-of-run to persist to DB.
+  summaryFilePath?: string;
+  // exact bytes of the seeded snapshot file at run start. compared against
+  // the file content at end-of-run to detect "agent never touched it" — in
+  // that case persistSummary skips the DB write (saving the seed verbatim
+  // would either re-write what the DB already has, on incremental runs, or
+  // serialize the placeholder scaffold, on first runs).
+  summarySeed?: string;
+  // set to true after persistSummary completes once. prevents the error-path
+  // call (which exists so a successful agent edit before a crash still gets
+  // persisted) from redundantly re-running the DB PATCH on the
+  // success-then-late-throw path.
+  summaryPersistAttempted?: boolean;
   output?: string;
   usageEntries: AgentUsage[];
   model?: string | undefined;

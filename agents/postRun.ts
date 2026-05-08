@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { type AgentId, formatMcpToolRef } from "../external.ts";
 import { LIFECYCLE_HOOK_TIMEOUT_MS } from "../lifecycle.ts";
 import { log } from "../utils/cli.ts";
@@ -92,13 +93,46 @@ export function buildStopHookPrompt(failure: StopHookFailure): string {
   ].join("\n");
 }
 
+/** check whether the seeded summary file is byte-identical to its seed.
+ * a missing or unreadable file returns false (don't nudge — the agent
+ * may have legitimately deleted it, or the seed step failed; the read-
+ * back path in main.ts handles both cases by skipping persist). */
+async function isSummaryUnchanged(filePath: string, seed: string): Promise<boolean> {
+  try {
+    const current = await readFile(filePath, "utf8");
+    return current === seed;
+  } catch {
+    return false;
+  }
+}
+
+export function buildSummaryStalePrompt(filePath: string): string {
+  return [
+    `PR SUMMARY UNTOUCHED — the rolling PR summary file at \`${filePath}\` is byte-identical to its seed; this run did not edit it.`,
+    "",
+    "review the diff and update the file in place to reflect what changed in the PR. update intent, key changes, and any risks worth flagging — keep the existing section headings stable so incremental runs produce clean diffs.",
+    "",
+    "if the diff is genuinely too small or noisy to warrant rewriting (e.g. a one-line typo fix, a comment tweak, a formatting-only change), it's fine to leave the structure as-is — but at minimum confirm you considered it by appending one line to the appropriate section noting the run. silence is not an option; the snapshot is what the next review run reads as context.",
+  ].join("\n");
+}
+
 /**
- * check the two post-run gates: did the stop hook pass and is the working
- * tree clean? returns everything that still needs fixing so the caller can
+ * check the post-run gates: did the stop hook pass, is the working tree
+ * clean, and (when applicable) did the agent touch the rolling PR summary
+ * snapshot? returns everything that still needs nudging so the caller can
  * render a single combined resume prompt.
+ *
+ * the summary-stale check is skipped when `summaryFilePath` / `summarySeed`
+ * are not provided; this is the common case (non-PR runs, runs where the
+ * dispatcher didn't request snapshot generation, runs where the seed step
+ * failed). loop callers also pass these as undefined after the agent has
+ * already been nudged once, to avoid burning the retry budget on a soft
+ * non-blocking gate.
  */
 export async function collectPostRunIssues(params: {
   stopScript: string | null | undefined;
+  summaryFilePath?: string | undefined;
+  summarySeed?: string | undefined;
 }): Promise<PostRunIssues> {
   const issues: PostRunIssues = {};
   if (params.stopScript) {
@@ -107,6 +141,10 @@ export async function collectPostRunIssues(params: {
   }
   const status = getGitStatus();
   if (status) issues.dirtyTree = status;
+  if (params.summaryFilePath && params.summarySeed !== undefined) {
+    const stale = await isSummaryUnchanged(params.summaryFilePath, params.summarySeed);
+    if (stale) issues.summaryStale = { filePath: params.summaryFilePath };
+  }
   return issues;
 }
 
@@ -114,6 +152,7 @@ export function buildPostRunPrompt(issues: PostRunIssues): string {
   const parts: string[] = [];
   if (issues.stopHook) parts.push(buildStopHookPrompt(issues.stopHook));
   if (issues.dirtyTree) parts.push(buildCommitPrompt(issues.dirtyTree));
+  if (issues.summaryStale) parts.push(buildSummaryStalePrompt(issues.summaryStale.filePath));
   return parts.join("\n\n---\n\n");
 }
 
@@ -164,6 +203,14 @@ export async function runPostRunRetryLoop<R extends AgentResult>(params: {
   initialResult: R;
   initialUsage: AgentUsage | undefined;
   stopScript: string | null | undefined;
+  /** absolute path to the seeded PR summary file. when set together with
+   * `summarySeed`, the loop checks after each agent attempt whether the
+   * file has been edited; if not, it nudges the agent ONCE via a resume
+   * turn (subsequent iterations skip the check so we don't keep burning
+   * retries on a soft gate when the agent has decided no edit is warranted). */
+  summaryFilePath?: string | undefined;
+  /** exact bytes of the seeded summary file used for the unchanged-check. */
+  summarySeed?: string | undefined;
   resume: (context: { prompt: string; previousResult: R }) => Promise<R>;
   canResume?: ((result: R) => boolean) | undefined;
   reflectionPrompt?: string | undefined;
@@ -173,10 +220,21 @@ export async function runPostRunRetryLoop<R extends AgentResult>(params: {
   let finalIssues: PostRunIssues = {};
   let gateResumeCount = 0;
   let pendingReflection = params.reflectionPrompt;
+  // nudge for an untouched summary file fires AT MOST ONCE per run. after
+  // we've delivered the prompt, subsequent gate checks pass undefined so
+  // the loop doesn't keep flagging the same condition — the agent may have
+  // legitimately decided no edit is warranted, and re-prompting would
+  // burn the retry budget without adding signal.
+  let summaryStaleNudged = false;
 
   while (gateResumeCount < MAX_POST_RUN_RETRIES) {
     if (!result.success) break;
-    const issues = await collectPostRunIssues({ stopScript: params.stopScript });
+    const issues = await collectPostRunIssues({
+      stopScript: params.stopScript,
+      summaryFilePath: summaryStaleNudged ? undefined : params.summaryFilePath,
+      summarySeed: summaryStaleNudged ? undefined : params.summarySeed,
+    });
+    if (issues.summaryStale) summaryStaleNudged = true;
     finalIssues = issues;
 
     if (!hasPostRunIssues(issues)) {
@@ -230,8 +288,25 @@ export async function runPostRunRetryLoop<R extends AgentResult>(params: {
 
     log.info(`» post-run retry (attempt ${gateResumeCount + 1}/${MAX_POST_RUN_RETRIES})`);
     const prompt = buildPostRunPrompt(issues);
+    // summary-stale is a soft gate that must never flip a successful run to
+    // failed. when it's the only issue and the resume itself errors out,
+    // restore the pre-resume successful result and break — persistSummary
+    // detects the unchanged file via its seed comparison and skips the DB
+    // write on its own, so no further coordination is needed here.
+    const onlySummaryStale =
+      issues.summaryStale !== undefined &&
+      issues.stopHook === undefined &&
+      issues.dirtyTree === undefined;
+    const preResume = result;
     result = await params.resume({ prompt, previousResult: result });
     aggregatedUsage = mergeAgentUsage(aggregatedUsage, result.usage);
+    if (!result.success && onlySummaryStale) {
+      log.warning(
+        `» summary-stale resume turn failed (${result.error ?? "unknown error"}), preserving prior successful result`
+      );
+      result = preResume;
+      break;
+    }
     gateResumeCount++;
   }
 
@@ -242,6 +317,10 @@ export async function runPostRunRetryLoop<R extends AgentResult>(params: {
   // already observed a clean state we skip: re-running the hook risks flaky
   // false-positive failures right after it just passed.
   if (gateResumeCount > 0 && result.success && hasPostRunIssues(finalIssues)) {
+    // re-check the gates that can actually fail the run (stop hook /
+    // dirty tree). summary-stale is intentionally NOT re-checked here:
+    // we already delivered the one-shot nudge, and a still-unchanged
+    // file at this point is the agent's deliberate choice.
     finalIssues = await collectPostRunIssues({ stopScript: params.stopScript });
   }
 

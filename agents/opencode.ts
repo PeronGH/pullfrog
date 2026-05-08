@@ -962,6 +962,8 @@ export const opencode = agent({
       initialResult: result,
       initialUsage: result.usage,
       stopScript: ctx.stopScript,
+      summaryFilePath: ctx.summaryFilePath,
+      summarySeed: ctx.summarySeed,
       reflectionPrompt: buildLearningsReflectionPrompt("opencode"),
       resume: async (c) =>
         runOpenCode({

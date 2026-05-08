@@ -289,7 +289,7 @@ When embedding images (e.g. uploaded screenshots) in comments or PR bodies, alwa
 
 **\`report_progress\`**: call this exactly once at the end of every run with a brief final summary (1-3 sentences) unless the mode guidance instructs otherwise. Never call it for intermediate status updates (e.g., "Checking for changes...", "Starting review...") — the task list handles live progress automatically. Calling \`report_progress\` replaces the task list with your summary and preserves the current task list in a collapsible section. Keep the summary concise — do not repeat what the task list already shows. Focus on the outcome (what was accomplished, links to artifacts) rather than listing individual steps. If something failed, include the tool's error text even when that makes the summary longer.
 
-Never use \`create_issue_comment\` for task progress — that creates duplicate comments and leaves the progress comment stuck in its initial state. \`create_issue_comment\` is only for standalone comments unrelated to your current task (e.g., Plan comments, PR Summary comments).
+Never use \`create_issue_comment\` for task progress — that creates duplicate comments and leaves the progress comment stuck in its initial state. \`create_issue_comment\` is only for standalone comments unrelated to your current task (e.g., Plan comments).
 
 ### If you get stuck
 

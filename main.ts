@@ -1,6 +1,7 @@
 // changes to tool permissions should be reflected in wiki/granular-tools.md
 
 import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as core from "@actions/core";
 import { deleteProgressComment, reportProgress } from "./mcp/comment.ts";
@@ -34,6 +35,7 @@ import { executeLifecycleHook } from "./utils/lifecycle.ts";
 import { normalizeEnv } from "./utils/normalizeEnv.ts";
 import { aggregateUsage, patchWorkflowRunFields } from "./utils/patchWorkflowRunFields.ts";
 import { resolvePayload, resolvePromptInput } from "./utils/payload.ts";
+import { readSummaryFile, seedSummaryFile } from "./utils/prSummary.ts";
 import { postReviewCleanup } from "./utils/reviewCleanup.ts";
 import { handleAgentResult } from "./utils/run.ts";
 import { type AccountPlan, isInfraCovered } from "./utils/runContext.ts";
@@ -333,6 +335,67 @@ async function resolveProxyModel(ctx: {
   log.info(`» proxy: ${label} → ${ctx.proxyModel}`);
 }
 
+/**
+ * Fetch the most recent persisted PR summary snapshot for this PR.
+ * Returns null on first-time PRs, when summary is disabled, or on any error.
+ * Best-effort: a transient API failure should not block the run.
+ */
+async function fetchPreviousSnapshot(ctx: ToolContext, prNumber: number): Promise<string | null> {
+  if (!ctx.githubInstallationToken) return null;
+  try {
+    const response = await apiFetch({
+      path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/pr/${prNumber}/summary-comment`,
+      method: "GET",
+      headers: { authorization: `Bearer ${ctx.githubInstallationToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { snapshot?: string | null };
+    return typeof data.snapshot === "string" && data.snapshot.length > 0 ? data.snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the agent-edited PR summary tmpfile and persist to `WorkflowRun.summarySnapshot`.
+ *
+ * Best-effort: any failure is logged and does not affect the run's success
+ * status. Skips the PATCH when the file is byte-identical to its seed —
+ * persisting the seed verbatim would either re-write what the DB already has
+ * (on incremental runs) or serialize the placeholder scaffold (on first
+ * runs), neither of which is useful.
+ */
+async function persistSummary(ctx: ToolContext): Promise<void> {
+  const filePath = ctx.toolState.summaryFilePath;
+  if (!filePath) return;
+  // already-completed guard: the error-path call (success path persisted,
+  // then a late step threw) and the SIGINT/SIGTERM handler all funnel
+  // through here; the first one to arrive wins.
+  if (ctx.toolState.summaryPersistAttempted) return;
+  ctx.toolState.summaryPersistAttempted = true;
+  const snapshot = await readSummaryFile(filePath);
+  if (!snapshot) {
+    log.debug(`pr summary tmpfile missing or invalid at ${filePath} — skipping persist`);
+    return;
+  }
+  // soft gate: agent never touched the seeded file. saving the seed back
+  // is a no-op at best (incremental run — DB already has it) and a bug at
+  // worst (first run — serializes the placeholder italics). log a warning
+  // so the failure mode is visible in CI without flipping the run to
+  // failed.
+  const seed = ctx.toolState.summarySeed?.trim();
+  if (seed !== undefined && snapshot === seed) {
+    log.warning(
+      "» pr summary tmpfile unchanged from seed — skipping persist (agent did not edit it)"
+    );
+    return;
+  }
+  await patchWorkflowRunFields(ctx, { summarySnapshot: snapshot }).catch((err) => {
+    log.debug(`pr summary persist failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
 async function writeJobSummary(toolState: ToolState): Promise<void> {
   const usageSummary = formatUsageSummary(toolState.usageEntries);
   const summaryParts = [toolState.lastProgressBody, usageSummary].filter(Boolean);
@@ -549,6 +612,40 @@ export async function main(): Promise<MainResult> {
     log.info(`» MCP server started at ${mcpHttpServer.url}`);
     timer.checkpoint("mcpServer");
 
+    // seed the rolling PR summary tmpfile when the dispatcher requested it.
+    // gated on event being a PR — issue/workflow_dispatch runs have no
+    // summarySnapshot to maintain. file path is exposed to the agent via
+    // the select_mode response addendum (action/mcp/selectMode.ts).
+    if (payload.generateSummary && payload.event.is_pr && payload.event.issue_number) {
+      const previousSnapshot = await fetchPreviousSnapshot(toolContext, payload.event.issue_number);
+      const filePath = await seedSummaryFile({ tmpdir, previousSnapshot });
+      toolState.summaryFilePath = filePath;
+      // capture the exact bytes the agent will see at startup. used by
+      // the post-run retry loop to detect the agent forgetting to edit
+      // the file (byte-identical to seed → nudge once via resume turn)
+      // and by persistSummary to skip the DB write when nothing changed.
+      // we just wrote the file, so the read shouldn't fail; the catch
+      // leaves summarySeed unset (its default), in which case the unchanged
+      // checks downstream are simply skipped.
+      try {
+        toolState.summarySeed = await readFile(filePath, "utf8");
+      } catch {
+        // intentionally empty — summarySeed stays undefined
+      }
+      log.info(
+        `» summary snapshot seeded at ${filePath} (previous=${previousSnapshot ? "yes" : "no"})`
+      );
+      // on SIGINT/SIGTERM we still want to persist whatever the agent has
+      // written so far. handler is best-effort: any failure inside is
+      // swallowed by Promise.allSettled in exitHandler.ts, and the
+      // summaryPersistAttempted guard prevents double-execution if the
+      // signal arrives after the normal path already persisted. capture a
+      // narrowed reference so the closure doesn't depend on the outer
+      // `toolContext` variable being defined later.
+      const ctxForExit = toolContext;
+      onExitSignal(() => persistSummary(ctxForExit));
+    }
+
     startInstallation(toolContext);
 
     const modelForLog = resolveModelForLog({ payload, resolvedModel });
@@ -661,6 +758,8 @@ export async function main(): Promise<MainResult> {
       instructions,
       todoTracker,
       stopScript: runContext.repoSettings.stopScript,
+      summaryFilePath: toolState.summaryFilePath,
+      summarySeed: toolState.summarySeed,
       onActivityTimeout: onInnerActivityTimeout,
       onToolUse: (event) => {
         const wasTracked = recordDiffReadFromToolUse({
@@ -742,6 +841,12 @@ export async function main(): Promise<MainResult> {
       });
     }
 
+    // read the agent-edited summary tmpfile and persist to the DB. happens
+    // after the agent exits so the file is in its final state.
+    if (toolContext) {
+      await persistSummary(toolContext);
+    }
+
     // clean up stranded progress comments. the comment is stale unless
     // report_progress wrote a final summary to it — three sub-cases all reduce
     // to !finalSummaryWritten:
@@ -801,6 +906,13 @@ export async function main(): Promise<MainResult> {
       await postReviewCleanup(toolContext).catch((error) => {
         log.debug(`post-review cleanup failed: ${error}`);
       });
+    }
+
+    // best-effort summary persist on the error path: if the agent successfully
+    // edited the summary file before timing out / crashing, those edits are
+    // worth keeping for the next incremental run.
+    if (toolContext) {
+      await persistSummary(toolContext);
     }
 
     return {

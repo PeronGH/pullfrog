@@ -281,6 +281,8 @@ export interface WriteablePayload {
   cwd?: string | undefined;
   /** pre-created progress comment (ID + type) for updating status */
   progressComment?: { id: string; type: "issue" | "review" } | undefined;
+  /** when true, seed the PR summary tmpfile + persist edits at run end */
+  generateSummary?: boolean | undefined;
 }
 
 // immutable payload type for agent execution

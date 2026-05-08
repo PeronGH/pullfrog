@@ -14,7 +14,8 @@ export type WorkflowRunArtifactPatchKey =
   | "issueNodeId"
   | "reviewNodeId"
   | "planCommentNodeId"
-  | "summaryCommentNodeId";
+  | "summaryCommentNodeId"
+  | "summarySnapshot";
 
 /**
  * Usage fields — aggregated across all agent calls and PATCHed once at
@@ -38,6 +39,7 @@ const STRING_KEYS: WorkflowRunArtifactPatchKey[] = [
   "reviewNodeId",
   "planCommentNodeId",
   "summaryCommentNodeId",
+  "summarySnapshot",
 ];
 
 const NUMBER_KEYS: WorkflowRunUsagePatchKey[] = [

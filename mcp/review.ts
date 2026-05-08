@@ -187,8 +187,8 @@ export type DuplicateReviewDecision = {
  * the agent is instructed to call create_pull_request_review exactly once per
  * Review-mode session (see action/modes.ts), but in practice it sometimes
  * submits twice — once with substantive feedback, then again with the
- * canonical "Reviewed — no issues found." body when the prompt's branch
- * logic re-classifies non-blocking observations. the second submission is
+ * canonical "No new issues found." body when the prompt's branch logic
+ * re-classifies non-blocking observations. the second submission is
  * always redundant: the first review is the record, and the duplicate just
  * adds noise to the PR.
  *

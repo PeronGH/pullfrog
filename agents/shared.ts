@@ -42,13 +42,26 @@ export interface StopHookFailure {
   output: string;
 }
 
+export interface SummaryStale {
+  /** absolute path to the seeded snapshot file the agent was meant to edit. */
+  filePath: string;
+}
+
 export interface PostRunIssues {
   stopHook?: StopHookFailure;
   dirtyTree?: string;
+  /** populated when the rolling PR summary file is byte-identical to its
+   * seed, i.e. the agent never touched it. soft gate — nudges once via a
+   * resume turn but never fails the run, parallel to dirtyTree semantics. */
+  summaryStale?: SummaryStale;
 }
 
 export function hasPostRunIssues(issues: PostRunIssues): boolean {
-  return issues.stopHook !== undefined || issues.dirtyTree !== undefined;
+  return (
+    issues.stopHook !== undefined ||
+    issues.dirtyTree !== undefined ||
+    issues.summaryStale !== undefined
+  );
 }
 
 /**
@@ -106,6 +119,20 @@ export interface AgentRunContext {
    * guidance. null when the repo has no stop hook configured.
    */
   stopScript?: string | null | undefined;
+  /**
+   * absolute path to the rolling PR summary tmpfile, when one was seeded
+   * for this run (Review / IncrementalReview / pr-summary Task). enables
+   * a post-run sanity nudge that prompts the agent if the file is still
+   * byte-identical to its seed.
+   */
+  summaryFilePath?: string | undefined;
+  /**
+   * exact bytes of the seeded summary file. compared against the current
+   * file content after each agent attempt to detect "agent forgot to edit
+   * the summary" — particularly common with smaller models that lose
+   * track of multi-step instructions.
+   */
+  summarySeed?: string | undefined;
   /**
    * called synchronously when the agent subprocess is killed for inner
    * activity timeout. lets main.ts tear down shared resources (MCP HTTP

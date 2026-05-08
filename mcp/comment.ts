@@ -56,10 +56,8 @@ export const Comment = type({
   issueNumber: type.number.describe("the issue number to comment on"),
   body: type.string.describe("the comment body content"),
   type: type
-    .enumerated("Plan", "Summary", "Comment")
-    .describe(
-      "Plan: record as the plan for this run. Summary: record as the PR summary comment (one per PR, updated in place). Comment: regular comment (default)."
-    )
+    .enumerated("Plan", "Comment")
+    .describe("Plan: record as the plan for this run. Comment: regular comment (default).")
     .optional(),
 });
 
@@ -67,36 +65,10 @@ export function CreateCommentTool(ctx: ToolContext) {
   return tool({
     name: "create_issue_comment",
     description:
-      "Create a comment on a GitHub issue or PR. For progress/plan updates on the current run use report_progress instead. Use type: 'Plan' for plan comments, type: 'Summary' for PR summary comments.",
+      "Create a comment on a GitHub issue or PR. For progress/plan updates on the current run use report_progress instead. Use type: 'Plan' for plan comments.",
     parameters: Comment,
     execute: execute(async ({ issueNumber, body, type: commentType }) => {
       const bodyWithFooter = addFooter(ctx, body);
-
-      // if a summary comment already exists (found by select_mode), update instead of creating
-      if (commentType === "Summary" && ctx.toolState.existingSummaryCommentId) {
-        log.info(
-          `» redirecting create_issue_comment(Summary) to update existing comment ${ctx.toolState.existingSummaryCommentId}`
-        );
-        const result = await ctx.octokit.rest.issues.updateComment({
-          owner: ctx.repo.owner,
-          repo: ctx.repo.name,
-          comment_id: ctx.toolState.existingSummaryCommentId,
-          body: bodyWithFooter,
-        });
-
-        ctx.toolState.wasUpdated = true;
-
-        if (result.data.node_id) {
-          await patchWorkflowRunFields(ctx, { summaryCommentNodeId: result.data.node_id });
-        }
-
-        return {
-          success: true,
-          commentId: result.data.id,
-          url: result.data.html_url,
-          body: result.data.body,
-        };
-      }
 
       const result = await ctx.octokit.rest.issues.createComment({
         owner: ctx.repo.owner,
@@ -129,10 +101,6 @@ export function CreateCommentTool(ctx: ToolContext) {
           url: updateResult.data.html_url,
           body: updateResult.data.body,
         };
-      }
-
-      if (commentType === "Summary" && result.data.node_id) {
-        await patchWorkflowRunFields(ctx, { summaryCommentNodeId: result.data.node_id });
       }
 
       return {
@@ -209,7 +177,7 @@ export async function reportProgress(
   // always track the body for job summary
   ctx.toolState.lastProgressBody = body;
 
-  // silent events (e.g., auto-label, PR summary) should never create or update progress comments.
+  // silent events (e.g., auto-label, pr-summary Task) should never create or update progress comments.
   // the body is still tracked above for the GitHub Actions job summary.
   if (ctx.payload.event.silent) {
     return { body, action: "skipped" };

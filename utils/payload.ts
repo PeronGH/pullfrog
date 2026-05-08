@@ -27,6 +27,7 @@ export const JsonPayload = type({
     id: "string",
     type: "'issue' | 'review'",
   }).or("undefined"),
+  "generateSummary?": "boolean | undefined",
 });
 
 // permission levels that indicate collaborator status (have push access)
@@ -160,6 +161,7 @@ export function resolvePayload(
     timeout: inputs.timeout ?? jsonPayload?.timeout,
     cwd: resolveCwd(inputs.cwd),
     progressComment: jsonPayload?.progressComment,
+    generateSummary: jsonPayload?.generateSummary,
 
     // permissions: inputs > repoSettings > fallbacks
     push: inputs.push ?? repoSettings.push ?? "restricted",

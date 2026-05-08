@@ -719,6 +719,8 @@ export const claude = agent({
       initialResult: result,
       initialUsage: result.usage,
       stopScript: ctx.stopScript,
+      summaryFilePath: ctx.summaryFilePath,
+      summarySeed: ctx.summarySeed,
       reflectionPrompt: buildLearningsReflectionPrompt("claude"),
       canResume: (r) => Boolean(r.sessionId),
       resume: async (c) => {

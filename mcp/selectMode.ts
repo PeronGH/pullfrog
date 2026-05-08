@@ -1,14 +1,13 @@
 import { type } from "arktype";
 import { formatMcpToolRef } from "../external.ts";
-import { type Mode, PR_SUMMARY_FORMAT } from "../modes.ts";
+import type { Mode } from "../modes.ts";
 import { apiFetch } from "../utils/apiFetch.ts";
-import { log } from "../utils/log.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
 export const SelectModeParams = type({
   mode: type.string.describe(
-    "the name of the mode to select (e.g., 'Build', 'Plan', 'Review', 'IncrementalReview', 'Fix', 'AddressReviews', 'Task', 'ResolveConflicts', 'Summarize')"
+    "the name of the mode to select (e.g., 'Build', 'Plan', 'Review', 'IncrementalReview', 'Fix', 'AddressReviews', 'Task', 'ResolveConflicts')"
   ),
   "issue_number?": type("number").describe(
     "optional issue number; when provided with Plan mode, used to look up an existing plan comment for this issue (edit vs create)"
@@ -32,18 +31,6 @@ An existing plan comment was found for this issue. Update that comment with the 
    - produce a structured plan with clear milestones
 3. Call \`${t("report_progress")}\` with the full revised plan text and \`{ target_plan_comment: true }\` so it updates the existing plan comment (not the progress comment).
 4. Then post a short note to the progress comment (e.g. "Plan has been updated in the comment above.") via \`${t("report_progress")}\` so it is not left as "Leaping...".`,
-
-    SummaryUpdate: `### Checklist (updating existing summary)
-
-An existing summary comment was found for this PR. Update it rather than creating a new one.
-
-1. Use \`previousSummaryBody\` from this response as the current summary to revise.
-2. Checkout the PR via \`${t("checkout_pr")}\` — this returns PR metadata and a \`diffPath\`.
-3. Read the diff using the TOC to selectively read relevant sections. Produce an updated summary reflecting the current state of the PR, using the existing summary (\`previousSummaryBody\`) as a starting point. If EVENT INSTRUCTIONS specify a custom format, follow that instead of the default format below.
-4. Call \`${t("edit_issue_comment")}\` with \`commentId: existingSummaryCommentId\` (from this response) and the updated summary body.
-5. Call \`${t("report_progress")}\` with a brief note (e.g., "Updated PR summary.").
-
-${PR_SUMMARY_FORMAT}`,
   };
 }
 
@@ -78,10 +65,7 @@ function buildOrchestratorGuidance(
 // matches the API response for /repo/[owner]/[repo]/issue/[issueNumber]/plan-comment
 export type PlanCommentResponsePayload = { error: string } | { commentId: number; body: string };
 
-// matches the API response for /repo/[owner]/[repo]/pr/[prNumber]/summary-comment
-export type SummaryCommentResponsePayload = { error: string } | { commentId: number; body: string };
-
-// IMPORTANT: these routes authenticate via GitHub installation token (getEnrichedRepo),
+// IMPORTANT: this route authenticates via GitHub installation token (getEnrichedRepo),
 // NOT the Pullfrog API JWT (ctx.apiToken). use ctx.githubInstallationToken here.
 // see wiki/api-auth.md for the two auth patterns.
 async function fetchExistingPlanComment(
@@ -103,33 +87,30 @@ async function fetchExistingPlanComment(
   }
 }
 
-async function fetchExistingSummaryComment(
-  ctx: ToolContext,
-  prNumber: number
-): Promise<Extract<SummaryCommentResponsePayload, { commentId: number }> | null> {
-  if (!ctx.githubInstallationToken) {
-    log.warning("fetchExistingSummaryComment: no token, skipping");
-    return null;
-  }
-  const path = `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/pr/${prNumber}/summary-comment`;
-  try {
-    const response = await apiFetch({
-      path,
-      method: "GET",
-      headers: { authorization: `Bearer ${ctx.githubInstallationToken}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const data = (await response.json()) as SummaryCommentResponsePayload;
-    if (response.ok && "commentId" in data) {
-      return data;
-    }
-    const errMsg = "error" in data ? data.error : "(no error body)";
-    log.warning(`fetchExistingSummaryComment: ${response.status} ${path} — ${errMsg}`);
-    return null;
-  } catch (error) {
-    log.warning("fetchExistingSummaryComment failed:", error);
-    return null;
-  }
+const SUMMARY_MODES = new Set(["Review", "IncrementalReview", "Task"]);
+
+/** modes that gain the PR summary edit step when toolState.summaryFilePath is set.
+ *
+ * NOTE: this snapshot is an internal artifact consumed by future agent runs. it is
+ * deliberately NOT shaped by user-supplied summary instructions — those would warp
+ * the durable agent context. user-facing summarization (e.g. the review body's
+ * "Reviewed changes" section) is governed by review-mode prompts and review
+ * instructions, separately from this snapshot. */
+function buildSummaryAddendum(t: (name: string) => string, ctx: ToolContext): string {
+  const filePath = ctx.toolState.summaryFilePath;
+  if (!filePath) return "";
+  return `### PR summary snapshot — required step
+
+A rolling PR summary lives at \`${filePath}\`. It is your durable cross-run agent context — a functional summary of what this PR does, the subsystems and files it touches, the material behavior of its changes, and any risks or open questions worth carrying forward. It is NOT a chronological log of past review runs; commit-level history can already be reconstructed from \`${t("list_pull_request_reviews")}\`.
+
+How to use it:
+
+- read \`${filePath}\` at the START of the run, alongside the diff. it represents what previous agent runs already understood about this PR — absorb it before picking lenses or crafting subagent dispatch prompts. if it's a fresh seed (file is one or two lines), this is a first review and you'll be filling it in from the diff.
+- let the snapshot inform triage and dispatch. when it already tracks a risk, your lens prompts to subagents are stronger when they reference that context (e.g. "the JSDoc explicitly scopes to code points — do not flag grapheme-cluster issues" if the snapshot already documents that contract). when something the snapshot tracks is now resolved by new commits, note that. when new commits introduce something the snapshot doesn't yet describe, that's exactly where your fan-out should focus.
+- update the file in place to reflect the PR's CURRENT state. revise stale claims, drop resolved risks, add new behavior or risks. accuracy over breadth — every claim must be grounded in the diff. write for the next agent run, not for a human.
+- structure however serves THIS PR. there is no required section template. a refactor might organize by renamed export and call-site impact; a feature by capability; a billing change by money path. a compact note of which commit ranges have been reviewed should always be present so future runs scope correctly, but the rest is your call. when the structure works across runs, keep it stable so range-diffs are clean; when the PR's character changes (e.g. scope expands), reshape.
+
+Do NOT call \`${t("create_issue_comment")}\` for the summary — the server reads this file at end-of-run and persists it. The file edit is mandatory regardless of whether a review is submitted; the snapshot feeds the next run.`;
 }
 
 export function SelectModeTool(ctx: ToolContext) {
@@ -180,22 +161,19 @@ export function SelectModeTool(ctx: ToolContext) {
         }
       }
 
-      if (selectedMode.name === "Summarize") {
-        const prNumber = ctx.payload.event.issue_number;
-        if (prNumber !== undefined) {
-          const existing = await fetchExistingSummaryComment(ctx, prNumber);
-          if (existing !== null) {
-            ctx.toolState.existingSummaryCommentId = existing.commentId;
-            return {
-              ...buildOrchestratorGuidance(ctx, selectedMode, overrides.SummaryUpdate),
-              existingSummaryCommentId: existing.commentId,
-              previousSummaryBody: existing.body,
-            };
-          }
-        }
-      }
+      const summaryAddendum = SUMMARY_MODES.has(selectedMode.name)
+        ? buildSummaryAddendum(t, ctx)
+        : "";
 
-      return buildOrchestratorGuidance(ctx, selectedMode);
+      const base = buildOrchestratorGuidance(ctx, selectedMode);
+      if (summaryAddendum.length > 0) {
+        return {
+          ...base,
+          orchestratorGuidance: `${base.orchestratorGuidance}\n\n${summaryAddendum}`,
+          summaryFilePath: ctx.toolState.summaryFilePath,
+        };
+      }
+      return base;
     }),
   });
 }
