@@ -1005,7 +1005,9 @@ export const opencode = agent({
       stopScript: ctx.stopScript,
       summaryFilePath: ctx.summaryFilePath,
       summarySeed: ctx.summarySeed,
-      reflectionPrompt: buildLearningsReflectionPrompt("opencode"),
+      reflectionPrompt: ctx.learningsFilePath
+        ? buildLearningsReflectionPrompt(ctx.learningsFilePath)
+        : undefined,
       resume: async (c) =>
         runOpenCode({
           ...runParams,

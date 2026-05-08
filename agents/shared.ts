@@ -134,6 +134,13 @@ export interface AgentRunContext {
    */
   summarySeed?: string | undefined;
   /**
+   * absolute path to the rolling repo-level learnings tmpfile. seeded for
+   * every run from `Repo.learnings`. used by the post-run reflection turn
+   * so the prompt can point the agent at a concrete path to edit; the
+   * file's content is read back and persisted by main.ts after the run.
+   */
+  learningsFilePath?: string | undefined;
+  /**
    * called synchronously when the agent subprocess is killed for inner
    * activity timeout. lets main.ts tear down shared resources (MCP HTTP
    * server) so lingering SSE reconnects don't keep the outer timer alive.

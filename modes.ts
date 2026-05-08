@@ -65,10 +65,6 @@ Rules:
 - Focus on *intent*, not *what* — the diff already shows what changed
 - Get the file count and commit count from the checkout_pr metadata, not by counting manually`;
 
-function learningsStep(t: (toolName: string) => string, n: number): string {
-  return `${n}. **learnings** (only if high confidence): if you discovered something about repo setup, test commands, conventions, or patterns that you are confident is correct and would reliably help future runs, call \`${t("update_learnings")}\` to persist it. skip this step if you are unsure or the finding is speculative/one-off. format as a flat bullet list (\`- \` per line, one fact per bullet). merge with existing learnings from the prompt — pass the FULL merged list. deduplicate, and drop bullets that are clearly wrong or no longer relevant to the current codebase.`;
-}
-
 export function computeModes(agentId: AgentId): Mode[] {
   const t = (toolName: string) => formatMcpToolRef(agentId, toolName);
   return [
@@ -125,8 +121,6 @@ export function computeModes(agentId: AgentId): Mode[] {
    - create a PR via \`${t("create_pull_request")}\`
    - call \`${t("report_progress")}\` with the PR link or the exact error if push/PR failed
 
-${learningsStep(t, 6)}
-
 ### Notes
 
 For simple, well-defined tasks, skip the plan phase and go straight to build.`,
@@ -155,9 +149,7 @@ For simple, well-defined tasks, skip the plan phase and go straight to build.`,
    - confirm a clean working tree, then push via \`${t("push_branch")}\` (same push/prepush guidance as Build mode in *SYSTEM*)
    - reply to each comment using \`${t("reply_to_review_comment")}\`
    - resolve addressed threads via \`${t("resolve_review_thread")}\`
-   - call \`${t("report_progress")}\` with a brief summary (or the exact push error if push failed)
-
-${learningsStep(t, 6)}`,
+   - call \`${t("report_progress")}\` with a brief summary (or the exact push error if push failed)`,
     },
     // Review and IncrementalReview use the multi-lens orchestrator pattern
     // (canonical source: .claude/commands/anneal.md). The orchestrator does
@@ -331,9 +323,7 @@ ${PR_SUMMARY_FORMAT}`,
 
 2. Produce a structured, actionable plan with clear milestones.
 
-3. Call \`${t("report_progress")}\` with the plan.
-
-${learningsStep(t, 4)}`,
+3. Call \`${t("report_progress")}\` with the plan.`,
     },
     {
       name: "Fix",
@@ -356,9 +346,7 @@ ${learningsStep(t, 4)}`,
 
 5. Finalize:
    - confirm a clean working tree, then push via \`${t("push_branch")}\` (same push/prepush guidance as Build mode in *SYSTEM*)
-   - call \`${t("report_progress")}\` with the diagnosis and fix summary (or the exact push error if push failed)
-
-${learningsStep(t, 6)}`,
+   - call \`${t("report_progress")}\` with the diagnosis and fix summary (or the exact push error if push failed)`,
     },
     {
       name: "ResolveConflicts",
@@ -403,9 +391,7 @@ ${learningsStep(t, 6)}`,
 3. Finalize:
    - if code changes were made, push to a pull request (new or existing) using \`${t("push_branch")}\` and \`${t("create_pull_request")}\` as needed. \`git status\` must be clean before you finish (see *SYSTEM* Git rules if push fails).
    - call \`${t("report_progress")}\` once with results — include exact tool errors if push or PR creation failed
-   - if the task involved labeling, commenting, or other GitHub operations, perform those directly
-
-${learningsStep(t, 4)}`,
+   - if the task involved labeling, commenting, or other GitHub operations, perform those directly`,
     },
   ];
 }

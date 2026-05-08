@@ -727,7 +727,9 @@ export const claude = agent({
       stopScript: ctx.stopScript,
       summaryFilePath: ctx.summaryFilePath,
       summarySeed: ctx.summarySeed,
-      reflectionPrompt: buildLearningsReflectionPrompt("claude"),
+      reflectionPrompt: ctx.learningsFilePath
+        ? buildLearningsReflectionPrompt(ctx.learningsFilePath)
+        : undefined,
       canResume: (r) => Boolean(r.sessionId),
       resume: async (c) => {
         const sessionId = c.previousResult.sessionId;

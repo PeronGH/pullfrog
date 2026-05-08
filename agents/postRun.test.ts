@@ -42,10 +42,10 @@ describe("runPostRunRetryLoop — reflection turn", () => {
   });
 
   it("does not flip a successful run to failed when reflection returns success:false", async () => {
-    // the reflection turn is a best-effort nudge (update_learnings). if it
-    // fails — e.g. the model API errors mid-turn — the underlying task has
-    // already completed and been gated cleanly, so the run as a whole must
-    // still be reported as successful.
+    // the reflection turn is a best-effort nudge (edit the learnings
+    // tmpfile). if it fails — e.g. the model API errors mid-turn — the
+    // underlying task has already completed and been gated cleanly, so the
+    // run as a whole must still be reported as successful.
     const initial = successResult({ output: "task done" });
     const resume = vi
       .fn<(ctx: { prompt: string; previousResult: AgentResult }) => Promise<AgentResult>>()
@@ -56,7 +56,7 @@ describe("runPostRunRetryLoop — reflection turn", () => {
       initialUsage: undefined,
       stopScript: null,
       resume,
-      reflectionPrompt: "REFLECTION: call update_learnings if anything is worth saving",
+      reflectionPrompt: "REFLECTION: edit learnings file if anything is worth saving",
     });
 
     expect(result.success).toBe(true);
@@ -110,7 +110,7 @@ describe("runPostRunRetryLoop — reflection turn", () => {
       initialUsage: undefined,
       stopScript: null,
       resume,
-      reflectionPrompt: "REFLECTION: consider update_learnings",
+      reflectionPrompt: "REFLECTION: consider editing learnings",
     });
 
     expect(result.success).toBe(true);
@@ -135,7 +135,7 @@ describe("runPostRunRetryLoop — reflection turn", () => {
       initialUsage: undefined,
       stopScript: null,
       resume,
-      reflectionPrompt: "REFLECTION: consider update_learnings",
+      reflectionPrompt: "REFLECTION: consider editing learnings",
     });
 
     expect(result.success).toBe(true);
@@ -186,7 +186,7 @@ describe("runPostRunRetryLoop — reflection turn", () => {
       initialUsage: undefined,
       stopScript: null,
       resume,
-      reflectionPrompt: "REFLECTION: consider update_learnings",
+      reflectionPrompt: "REFLECTION: consider editing learnings",
     });
 
     expect(result.success).toBe(true);

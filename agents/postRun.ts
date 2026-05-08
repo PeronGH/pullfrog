@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { type AgentId, formatMcpToolRef } from "../external.ts";
 import { LIFECYCLE_HOOK_TIMEOUT_MS } from "../lifecycle.ts";
 import { log } from "../utils/cli.ts";
 import {
@@ -157,26 +156,30 @@ export function buildPostRunPrompt(issues: PostRunIssues): string {
 }
 
 /**
- * prompt for a dedicated post-run reflection turn nudging the agent to call
- * `update_learnings` if it discovered anything worth persisting.
+ * prompt for a dedicated post-run reflection turn nudging the agent to edit
+ * the rolling learnings file if it discovered anything worth persisting.
  *
- * this exists because the learnings step baked into mode checklists is
- * frequently ignored — the agent stays focused on the task and the meta-ask
- * falls through. delivering it as its own resume turn, with nothing competing
- * for attention, raises the fire rate substantially.
+ * this exists because passive "if you learned something, write it down"
+ * instructions baked into mode checklists are frequently ignored — the agent
+ * stays focused on the task and the meta-ask falls through. delivering it
+ * as its own resume turn, with nothing competing for attention, raises the
+ * fire rate substantially.
+ *
+ * the file is the single source of truth — there is no separate MCP tool
+ * call. the server reads the file at end-of-run and persists any edits to
+ * `Repo.learnings`.
  */
-export function buildLearningsReflectionPrompt(agentId: AgentId): string {
-  const t = (name: string) => formatMcpToolRef(agentId, name);
+export function buildLearningsReflectionPrompt(filePath: string): string {
   return [
-    `REFLECTION — before you finish, think back over this task: did you discover anything about this repo's setup, test commands, conventions, or patterns that you are confident is correct and would reliably help future runs?`,
+    `REFLECTION — before you finish, think back over this task: did you discover anything about this repo's setup, test commands, conventions, or patterns that is high-confidence and would reliably help future runs?`,
     "",
-    `if so, call \`${t("update_learnings")}\` to persist it.`,
+    `the rolling learnings file is at \`${filePath}\`. read it first if you haven't already, then edit it in place using your native file tools. the server reads this file at end-of-run and persists any changes — there is no tool to call.`,
     "",
-    `rules:`,
-    `- only call \`${t("update_learnings")}\` when the finding is high-confidence and broadly useful. skip if unsure, speculative, or one-off.`,
-    `- pass the FULL merged list: existing learnings from the original prompt + your new discoveries. one fact per bullet, lines starting with \`- \`.`,
-    `- deduplicate, and drop bullets that are clearly wrong or no longer relevant to the current codebase.`,
-    `- if you already called \`${t("update_learnings")}\` earlier in this run, or nothing new is worth capturing, just reply "done" and stop — do not edit the repo for this reflection.`,
+    `keep the file healthy:`,
+    `- only add bullets when the finding is high-confidence AND broadly useful. skip speculative, one-off, or "maybe" findings.`,
+    `- prune bullets that are clearly wrong, no longer relevant, or low-signal (rarely useful). a focused, accurate file beats a long stale one.`,
+    `- format: flat bullet list, one fact per line starting with \`- \`. deduplicate against existing entries — if a bullet covers the same fact, update it in place instead of adding a duplicate.`,
+    `- leave the file alone if you have nothing substantively new to add and the existing entries still look healthy. silence is a valid outcome — just reply "done" and stop.`,
   ].join("\n");
 }
 

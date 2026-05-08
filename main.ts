@@ -31,6 +31,7 @@ import { resolveGit, setGitAuthServer } from "./utils/gitAuth.ts";
 import { startGitAuthServer } from "./utils/gitAuthServer.ts";
 import { createOctokit, writeGitHubUsageSummaryToFile } from "./utils/github.ts";
 import { resolveInstructions } from "./utils/instructions.ts";
+import { readLearningsFile, seedLearningsFile } from "./utils/learnings.ts";
 import { executeLifecycleHook } from "./utils/lifecycle.ts";
 import { normalizeEnv } from "./utils/normalizeEnv.ts";
 import { aggregateUsage, patchWorkflowRunFields } from "./utils/patchWorkflowRunFields.ts";
@@ -395,6 +396,58 @@ async function fetchPreviousSnapshot(ctx: ToolContext, prNumber: number): Promis
  * (on incremental runs) or serialize the placeholder scaffold (on first
  * runs), neither of which is useful.
  */
+/**
+ * Read the agent-edited repo-level learnings tmpfile and PATCH it to
+ * `Repo.learnings`.
+ *
+ * Best-effort: any failure is logged and does not affect the run's success
+ * status. Skips the PATCH when the file is byte-trim-identical to its seed —
+ * the agent didn't touch it, so writing the same content back would just
+ * burn a `LearningsRevision` row and an API round-trip.
+ *
+ * `model` is forwarded so `LearningsRevision.model` keeps populating; it
+ * powers the per-revision attribution badge in the UI history view.
+ */
+async function persistLearnings(ctx: ToolContext): Promise<void> {
+  const filePath = ctx.toolState.learningsFilePath;
+  if (!filePath) return;
+  if (ctx.toolState.learningsPersistAttempted) return;
+  ctx.toolState.learningsPersistAttempted = true;
+  const current = await readLearningsFile(filePath);
+  if (current === null) {
+    log.debug(`learnings tmpfile missing or unreadable at ${filePath} — skipping persist`);
+    return;
+  }
+  const seed = ctx.toolState.learningsSeed?.trim() ?? "";
+  if (current === seed) {
+    log.debug("learnings tmpfile unchanged from seed — skipping persist");
+    return;
+  }
+  try {
+    const response = await apiFetch({
+      path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/learnings`,
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${ctx.apiToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        learnings: current,
+        model: ctx.toolState.model,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      const error = await response.text().catch(() => "(no body)");
+      log.debug(`learnings persist failed (${response.status}): ${error}`);
+      return;
+    }
+    log.info("» learnings updated");
+  } catch (err) {
+    log.debug(`learnings persist failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function persistSummary(ctx: ToolContext): Promise<void> {
   const filePath = ctx.toolState.summaryFilePath;
   if (!filePath) return;
@@ -647,6 +700,47 @@ export async function main(): Promise<MainResult> {
     log.info(`» MCP server started at ${mcpHttpServer.url}`);
     timer.checkpoint("mcpServer");
 
+    // seed the rolling repo-level learnings tmpfile for every run. the
+    // agent reads the file at startup (path is surfaced in the LEARNINGS
+    // section of the prompt) and may edit it during the post-run
+    // reflection turn. persistLearnings reads it back at end-of-run and
+    // PATCHes any changes to Repo.learnings, byte-trim equality against
+    // the seed gates the API call. always-seed (vs gated): learnings are
+    // universal — any run can produce them, and gating just hides the
+    // affordance.
+    //
+    // wrapped in best-effort try/catch: this block runs unconditionally,
+    // and an unwrapped filesystem failure (ENOSPC, EACCES, hostile sandbox)
+    // would unwind into the outer main() catch and flip an otherwise-
+    // successful run to "❌ Pullfrog failed" before the agent even starts.
+    // matches `persistLearnings`'s own best-effort contract — learnings
+    // are a peripheral artifact, not a load-bearing capability. on failure
+    // toolState.learningsFilePath stays unset, and downstream consumers
+    // (`persistLearnings`, agent harnesses, `resolveInstructions`) all
+    // treat undefined as "no learnings affordance this run".
+    try {
+      const learningsPath = await seedLearningsFile({
+        tmpdir,
+        current: runContext.repoSettings.learnings,
+      });
+      toolState.learningsFilePath = learningsPath;
+      try {
+        toolState.learningsSeed = await readFile(learningsPath, "utf8");
+      } catch {
+        // intentionally empty — learningsSeed stays undefined, persistLearnings
+        // will treat seed as "" and persist any non-empty content
+      }
+      log.info(
+        `» learnings seeded at ${learningsPath} (existing=${runContext.repoSettings.learnings ? "yes" : "no"})`
+      );
+      const ctxForExit = toolContext;
+      onExitSignal(() => persistLearnings(ctxForExit));
+    } catch (err) {
+      log.warning(
+        `» learnings seed failed: ${err instanceof Error ? err.message : String(err)} — continuing without learnings file`
+      );
+    }
+
     // seed the rolling PR summary tmpfile when the dispatcher requested it.
     // gated on event being a PR — issue/workflow_dispatch runs have no
     // summarySnapshot to maintain. file path is exposed to the agent via
@@ -698,7 +792,7 @@ export async function main(): Promise<MainResult> {
       modes,
       agentId,
       outputSchema,
-      learnings: runContext.repoSettings.learnings,
+      learningsFilePath: toolState.learningsFilePath ?? null,
     });
     const logParts = [
       instructions.eventInstructions
@@ -795,6 +889,7 @@ export async function main(): Promise<MainResult> {
       stopScript: runContext.repoSettings.stopScript,
       summaryFilePath: toolState.summaryFilePath,
       summarySeed: toolState.summarySeed,
+      learningsFilePath: toolState.learningsFilePath,
       onActivityTimeout: onInnerActivityTimeout,
       onToolUse: (event) => {
         const wasTracked = recordDiffReadFromToolUse({
@@ -882,6 +977,13 @@ export async function main(): Promise<MainResult> {
       await persistSummary(toolContext);
     }
 
+    // same for the rolling repo-level learnings tmpfile. always seeded, so
+    // always read back; persistLearnings short-circuits when the file is
+    // unchanged from its seed.
+    if (toolContext) {
+      await persistLearnings(toolContext);
+    }
+
     // clean up stranded progress comments. the comment is stale unless
     // report_progress wrote a final summary to it — three sub-cases all reduce
     // to !finalSummaryWritten:
@@ -964,6 +1066,12 @@ export async function main(): Promise<MainResult> {
     // worth keeping for the next incremental run.
     if (toolContext) {
       await persistSummary(toolContext);
+    }
+
+    // same rationale for learnings: a partial edit before a crash is still
+    // worth keeping. persistLearnings is idempotent via learningsPersistAttempted.
+    if (toolContext) {
+      await persistLearnings(toolContext);
     }
 
     return {

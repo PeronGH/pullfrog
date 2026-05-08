@@ -12,7 +12,10 @@ interface InstructionsContext {
   modes: Mode[];
   agentId: AgentId;
   outputSchema?: Record<string, unknown> | undefined;
-  learnings: string | null;
+  /** absolute path to the seeded learnings tmpfile, or null when the file
+   * couldn't be seeded for some reason. main.ts always seeds, so in
+   * practice this is always set; the null case keeps the type honest. */
+  learningsFilePath: string | null;
 }
 
 interface PromptContext extends InstructionsContext {
@@ -350,11 +353,17 @@ function assembleFullPrompt(ctx: {
   procedure: string;
   eventContext: string;
   system: string;
-  learnings: string | null;
+  learningsFilePath: string | null;
   runtime: string;
 }): string {
-  const learningsSection = ctx.learnings
-    ? `************* LEARNINGS *************\n\n${ctx.learnings}`
+  // the LEARNINGS section is intentionally tiny — just the file path and a
+  // one-line "read it" instruction. embedding the contents would re-inflate
+  // the prompt every run (the previous design's failure mode) and clutter
+  // CI logs. the agent reads the file with its native file tool; the
+  // post-run reflection turn (action/agents/postRun.ts) is where editing
+  // is encouraged, with the prune-stale framing.
+  const learningsSection = ctx.learningsFilePath
+    ? `************* LEARNINGS *************\n\nRepo-level learnings accumulated by previous agent runs live at \`${ctx.learningsFilePath}\`. Read this file early and let the entries inform your approach (test commands, conventions, gotchas, etc.). The file may be empty if no learnings have been collected yet.`
     : "";
 
   const runtimeSection = `************* RUNTIME *************\n\n${ctx.runtime}`;
@@ -389,8 +398,8 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
   if (eventContext)
     tocEntries.push({ label: "EVENT CONTEXT", description: "related PR/issue data" });
   tocEntries.push({ label: "SYSTEM", description: "persona, security, tools, workflow rules" });
-  if (pctx.learnings)
-    tocEntries.push({ label: "LEARNINGS", description: "repo-specific knowledge" });
+  if (pctx.learningsFilePath)
+    tocEntries.push({ label: "LEARNINGS", description: "repo-specific knowledge file path" });
   tocEntries.push({ label: "RUNTIME", description: "environment metadata" });
 
   const toc = buildToc(tocEntries);
@@ -401,7 +410,7 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
     procedure,
     eventContext,
     system,
-    learnings: pctx.learnings,
+    learningsFilePath: pctx.learningsFilePath,
     runtime: pctx.runtime,
   });
 

@@ -39,7 +39,6 @@ import { GetIssueCommentsTool } from "./issueComments.ts";
 import { GetIssueEventsTool } from "./issueEvents.ts";
 import { IssueInfoTool } from "./issueInfo.ts";
 import { AddLabelsTool } from "./labels.ts";
-import { UpdateLearningsTool } from "./learnings.ts";
 import { SetOutputTool } from "./output.ts";
 import { CreatePullRequestTool, UpdatePullRequestBodyTool } from "./pr.ts";
 import { PullRequestInfoTool } from "./prInfo.ts";
@@ -143,6 +142,21 @@ export interface ToolState {
   // persisted) from redundantly re-running the DB PATCH on the
   // success-then-late-throw path.
   summaryPersistAttempted?: boolean;
+  // absolute path to the rolling repo-level learnings markdown file the
+  // agent reads at startup and may edit at end-of-run. seeded by main.ts
+  // for every run from `Repo.learnings` (empty file when no learnings
+  // exist yet); read back at end-of-run to persist any edits.
+  learningsFilePath?: string;
+  // exact bytes of the seeded learnings file at run start. compared
+  // against the file content at end-of-run to detect "agent never touched
+  // it" — in that case persistLearnings skips the DB PATCH (saving the
+  // identical content would be a no-op write that wastes a LearningsRevision
+  // row and the API round-trip).
+  learningsSeed?: string;
+  // mirror of `summaryPersistAttempted` for the learnings tmpfile — guards
+  // the error-path / exit-signal callers from a redundant second PATCH
+  // after the success path already persisted.
+  learningsPersistAttempted?: boolean;
   output?: string;
   usageEntries: AgentUsage[];
   model?: string | undefined;
@@ -189,8 +203,8 @@ export interface ToolContext {
   tmpdir: string;
   // repo-level OSS flag + account-level billing plan. together they decide
   // whether pullfrog is paying for marginal infra — see isInfraCovered in
-  // utils/runContext.ts. plan gating for things like update_learnings is
-  // enforced server-side via 402, so we pass plan along mostly for future
+  // utils/runContext.ts. plan gating for endpoints like the learnings PATCH
+  // is enforced server-side via 402, so we pass plan along mostly for future
   // use / observability. see wiki/pricing.md.
   oss: boolean;
   plan: AccountPlan;
@@ -288,7 +302,6 @@ function buildOrchestratorTools(ctx: ToolContext, outputSchema?: JsonSchema): To
     DeleteBranchTool(ctx),
     CreatePullRequestTool(ctx),
     UpdatePullRequestBodyTool(ctx),
-    UpdateLearningsTool(ctx),
   ];
 }
 
