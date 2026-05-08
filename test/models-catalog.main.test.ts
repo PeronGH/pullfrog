@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ModelProvider, modelAliases, providers } from "../models.ts";
+import { modelAliases } from "../models.ts";
 
 // ── catalog drift tests — main-only ─────────────────────────────────────────────
 //
@@ -7,6 +7,12 @@ import { type ModelProvider, modelAliases, providers } from "../models.ts";
 // models.ts still corresponds to a live, non-deprecated upstream model. upstream
 // catalog drift (new model ships, old model deprecated, etc.) causes failures
 // that are unrelated to any code change in the PR — so these run only on main.
+//
+// the registry is kept in sync with upstreams by the `models-bump` cron
+// (`.github/workflows/models-bump.yml`), which scans models.dev every 12h and
+// opens a PR bumping `resolve` / `openRouterResolve` for any alias whose
+// upstream has shipped a newer GA version. these tests are the integrity gate
+// for that PR — they catch typos, removed models, and openrouter mismatches.
 //
 // run locally with `pnpm test:catalog`.
 // in CI, gated to push events on main.
@@ -105,41 +111,4 @@ describe("openRouterResolve OpenRouter API validity", async () => {
       ).toBe(true);
     });
   }
-});
-
-describe("latest model per provider snapshot", async () => {
-  const data = await api;
-  const providerKeys = Object.keys(providers) as ModelProvider[];
-
-  const latestByProvider: Record<string, { modelId: string; releaseDate: string }> = {};
-
-  for (const key of providerKeys) {
-    const providerData = data[key];
-    if (!providerData) continue;
-
-    let latest: { modelId: string; releaseDate: string } | undefined;
-    for (const [modelId, model] of Object.entries(providerData.models)) {
-      // skip non-GA models so beta/nightly churn doesn't break the snapshot
-      if (model.status) continue;
-      const rd = model.release_date;
-      if (!rd) continue;
-      // tiebreak by modelId for stable ordering when release dates match
-      if (
-        !latest ||
-        rd > latest.releaseDate ||
-        (rd === latest.releaseDate && modelId > latest.modelId)
-      ) {
-        latest = { modelId, releaseDate: rd };
-      }
-    }
-    if (latest) {
-      latestByProvider[key] = latest;
-    }
-  }
-
-  // when this fails, a provider shipped a new model. check whether we need
-  // to add or update an alias in models.ts before updating the snapshot.
-  it("matches snapshot", () => {
-    expect(latestByProvider).toMatchSnapshot();
-  });
 });
