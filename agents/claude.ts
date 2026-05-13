@@ -18,7 +18,7 @@ import { performance } from "node:perf_hooks";
 import { pullfrogMcpName } from "../external.ts";
 
 import { getIdleMs, markActivity } from "../utils/activity.ts";
-import { log } from "../utils/cli.ts";
+import { formatJsonValue, log } from "../utils/cli.ts";
 import { installFromNpmTarball } from "../utils/install.ts";
 import { detectProviderError } from "../utils/providerErrors.ts";
 import { addSkill, installBundledSkills } from "../utils/skills.ts";
@@ -28,7 +28,7 @@ import type { TodoTracker } from "../utils/todoTracking.ts";
 import { getDevDependencyVersion } from "../utils/version.ts";
 import { buildLearningsReflectionPrompt, runPostRunRetryLoop } from "./postRun.ts";
 import { REVIEWER_AGENT_NAME, REVIEWER_SYSTEM_PROMPT } from "./reviewer.ts";
-import { deriveLabelFromTaskInput } from "./sessionLabeler.ts";
+import { formatWithLabel, ORCHESTRATOR_LABEL, SessionLabeler } from "./sessionLabeler.ts";
 import {
   type AgentResult,
   type AgentRunContext,
@@ -114,13 +114,21 @@ interface ContentBlock {
   [key: string]: unknown;
 }
 
+// SDK schema (per claude-agent-sdk docs) puts `session_id` and
+// `parent_tool_use_id` at the top level of every Assistant/User/System/Result
+// message, not inside `message`. Subagent events carry a non-null
+// `parent_tool_use_id` pointing at the orchestrator's Task/Agent tool_use id.
 interface ClaudeSystemEvent {
   type: "system";
+  session_id?: string;
+  parent_tool_use_id?: string | null;
   [key: string]: unknown;
 }
 
 interface ClaudeAssistantEvent {
   type: "assistant";
+  session_id?: string;
+  parent_tool_use_id?: string | null;
   message?: {
     role?: string;
     content?: ContentBlock[];
@@ -138,6 +146,8 @@ interface ClaudeAssistantEvent {
 
 interface ClaudeUserEvent {
   type: "user";
+  session_id?: string;
+  parent_tool_use_id?: string | null;
   message?: {
     role?: string;
     content?: ContentBlock[];
@@ -236,7 +246,37 @@ function tailLines(text: string, maxCodeUnits: number): string {
 export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
   const startTime = performance.now();
   let eventCount = 0;
-  const thinkingTimer = new ThinkingTimer();
+
+  // per-session labeler so parallel subagent log lines can be differentiated.
+  // claude-agent-sdk runs subagents inside the orchestrator's session — they
+  // share `session_id` — and stamps every subagent message with a non-null
+  // `parent_tool_use_id` pointing at the Agent tool_use that spawned them.
+  // we bind each Agent tool_use id to its dispatched label up front, then
+  // labelFor short-circuits to the direct mapping when parent_tool_use_id is
+  // set. orchestrator events (parent_tool_use_id === null) flow through the
+  // sessionID path and bind to ORCHESTRATOR_LABEL on first sighting.
+  const labeler = new SessionLabeler();
+  function eventLabel(event: { session_id?: string; parent_tool_use_id?: string | null }): string {
+    return labeler.labelFor(event.session_id ?? null, event.parent_tool_use_id ?? null);
+  }
+  function withLabel(label: string, message: string): string {
+    return label === ORCHESTRATOR_LABEL ? message : formatWithLabel(label, message);
+  }
+
+  // one ThinkingTimer per session — sharing a single timer across sessions
+  // conflated cross-session interleaving as parent thinking time. each timer
+  // formats its log lines through the session label so attribution is visible.
+  const thinkingTimers = new Map<string, ThinkingTimer>();
+  function timerFor(label: string): ThinkingTimer {
+    let t = thinkingTimers.get(label);
+    if (!t) {
+      const formatLine = (line: string) =>
+        label === ORCHESTRATOR_LABEL ? line : formatWithLabel(label, line);
+      t = new ThinkingTimer(formatLine);
+      thinkingTimers.set(label, t);
+    }
+    return t;
+  }
 
   let finalOutput = "";
   let sessionId: string | undefined;
@@ -280,18 +320,30 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
   }
 
   const handlers = {
-    system: (_event: ClaudeSystemEvent) => {
-      log.debug(`» ${params.label} system event`);
+    system: (event: ClaudeSystemEvent) => {
+      // claude-agent-sdk only emits system:init for the top-level query, so
+      // this binds the orchestrator label and never appears in subagent flow.
+      // we still route through eventLabel so a subagent system event (if the
+      // SDK ever adds one) wouldn't go silently misattributed.
+      const label = eventLabel(event);
+      log.debug(withLabel(label, `» ${params.label} system event`));
     },
     assistant: (event: ClaudeAssistantEvent) => {
       const content = event.message?.content;
       if (!content) return;
 
+      const label = eventLabel(event);
+      const boxTitle = label === ORCHESTRATOR_LABEL ? params.label : `${params.label} [${label}]`;
+
       for (const block of content) {
         if (block.type === "text" && block.text?.trim()) {
           const message = block.text.trim();
-          log.box(message, { title: params.label });
-          finalOutput = message;
+          log.box(message, { title: boxTitle });
+          // only the orchestrator's text becomes the run's "output" — subagent
+          // report-back text would otherwise clobber the parent's final answer.
+          if (label === ORCHESTRATOR_LABEL) {
+            finalOutput = message;
+          }
         } else if (block.type === "tool_use") {
           const toolName = block.name || "unknown";
           if (params.onToolUse) {
@@ -300,23 +352,34 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
               input: block.input,
             });
           }
-          thinkingTimer.markToolCall();
-          log.toolCall({ toolName, input: block.input || {} });
+          timerFor(label).markToolCall();
+          const inputFormatted = formatJsonValue(block.input || {});
+          const toolCallLine =
+            inputFormatted !== "{}" ? `» ${toolName}(${inputFormatted})` : `» ${toolName}()`;
+          log.info(withLabel(label, toolCallLine));
 
-          // surface the subagent identity when the orchestrator dispatches a
-          // Task — claude rolls subagent activity up into a single tool_result
-          // (no per-event session_id in its stream), so this log line is the
-          // only attribution available before the subagent's report-back.
-          if (toolName === "Task" && block.input && typeof block.input === "object") {
+          // when the orchestrator dispatches a subagent, bind the Agent
+          // tool_use id to the dispatched label so future events carrying
+          // `parent_tool_use_id === block.id` resolve directly to the right
+          // lens. v2.1.63+ renamed the tool to "Agent"; older versions
+          // emitted "Task". match both for forward-compat.
+          if (
+            (toolName === "Task" || toolName === "Agent") &&
+            block.input &&
+            typeof block.input === "object"
+          ) {
             const taskInput = block.input as {
               description?: string;
               subagent_type?: string;
               prompt?: string;
             };
-            const label = deriveLabelFromTaskInput(taskInput);
+            const dispatchedLabel = labeler.recordTaskDispatch(taskInput, block.id ?? null);
             log.info(
-              `» dispatching subagent: ${label}` +
-                (taskInput.subagent_type ? ` (subagent_type=${taskInput.subagent_type})` : "")
+              withLabel(
+                label,
+                `» dispatching subagent: ${dispatchedLabel}` +
+                  (taskInput.subagent_type ? ` (subagent_type=${taskInput.subagent_type})` : "")
+              )
             );
           }
 
@@ -326,8 +389,14 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
             params.todoTracker.cancel();
           }
 
-          // parse TodoWrite events for live progress tracking
-          if (toolName === "TodoWrite" && params.todoTracker?.enabled) {
+          // parse TodoWrite events for live progress tracking. only honor the
+          // orchestrator's todos — subagents emit their own todo lists which
+          // would otherwise clobber the visible progress comment.
+          if (
+            toolName === "TodoWrite" &&
+            params.todoTracker?.enabled &&
+            label === ORCHESTRATOR_LABEL
+          ) {
             params.todoTracker.update(block.input);
           }
         }
@@ -348,10 +417,12 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
       const content = event.message?.content;
       if (!content) return;
 
+      const label = eventLabel(event);
+
       for (const block of content) {
         if (typeof block === "string") continue;
         if (block.type === "tool_result") {
-          thinkingTimer.markToolResult();
+          timerFor(label).markToolResult();
 
           const outputContent =
             typeof block.content === "string"
@@ -369,9 +440,9 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
                 : String(block.content);
 
           if (block.is_error) {
-            log.info(`» tool error: ${outputContent}`);
+            log.info(withLabel(label, `» tool error: ${outputContent}`));
           } else {
-            log.debug(`» tool output: ${outputContent}`);
+            log.debug(withLabel(label, `» tool output: ${outputContent}`));
           }
         }
       }

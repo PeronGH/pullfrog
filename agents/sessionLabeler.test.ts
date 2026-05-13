@@ -146,6 +146,40 @@ describe("SessionLabeler", () => {
     ]);
   });
 
+  test("Claude path: parent_tool_use_id resolves directly without consuming FIFO", () => {
+    // Claude runs subagents inside the orchestrator's session — they share
+    // session_id — and stamps subagent messages with parent_tool_use_id.
+    // recording dispatch with the Agent tool_use id binds it directly so
+    // future events resolve regardless of session_id.
+    const labeler = new SessionLabeler();
+    expect(labeler.labelFor("shared-session", null)).toBe(ORCHESTRATOR_LABEL);
+
+    labeler.recordTaskDispatch({ description: "correctness" }, "toolu_01");
+    labeler.recordTaskDispatch({ description: "security" }, "toolu_02");
+
+    // subagent events come through with shared session_id but distinct
+    // parent_tool_use_id — direct mapping wins
+    expect(labeler.labelFor("shared-session", "toolu_01")).toBe("lens:correctness");
+    expect(labeler.labelFor("shared-session", "toolu_02")).toBe("lens:security");
+
+    // orchestrator events on the same session still resolve correctly
+    expect(labeler.labelFor("shared-session", null)).toBe(ORCHESTRATOR_LABEL);
+
+    // pendingLabels is unused on the Claude path — FIFO never consumed
+    expect(labeler.pendingDispatchCount()).toBe(2);
+    expect(labeler.size()).toBe(1);
+  });
+
+  test("Claude path: unknown parent_tool_use_id falls through to sessionID/FIFO logic", () => {
+    // defensive: if a subagent event arrives with a parent_tool_use_id we
+    // never recorded (e.g. orchestrator dispatched off-stream, or a tool we
+    // didn't track), the labeler shouldn't crash — it should fall through
+    // to the sessionID-keyed path.
+    const labeler = new SessionLabeler();
+    labeler.labelFor("shared", null);
+    expect(labeler.labelFor("shared", "unknown-tool-id")).toBe(ORCHESTRATOR_LABEL);
+  });
+
   test("realistic four-lens parallel fan-out — interleaved tool_use stream", () => {
     // simulates the event order we'd see when the orchestrator dispatches
     // 4 lens subagents in a single assistant turn and they all start emitting

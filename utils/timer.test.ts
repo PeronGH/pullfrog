@@ -203,5 +203,18 @@ describe("ThinkingTimer", () => {
       expect(cli.log.info).toHaveBeenNthCalledWith(1, "» thought for 4 seconds");
       expect(cli.log.info).toHaveBeenNthCalledWith(2, "» thought for 5 seconds");
     });
+
+    it("routes log lines through the optional formatLine for per-session prefixing", () => {
+      const startTime = 1000000;
+      vi.mocked(performance.now)
+        .mockReturnValueOnce(startTime) // markToolResult
+        .mockReturnValueOnce(startTime + 4000); // markToolCall
+
+      const timer = new ThinkingTimer((line) => `[lens:security] ${line}`);
+      timer.markToolResult();
+      timer.markToolCall();
+
+      expect(cli.log.info).toHaveBeenCalledWith("[lens:security] » thought for 4 seconds");
+    });
   });
 });

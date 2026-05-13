@@ -377,7 +377,6 @@ type RunParams = {
 async function runOpenCode(params: RunParams): Promise<AgentResult> {
   const startTime = performance.now();
   let eventCount = 0;
-  const thinkingTimer = new ThinkingTimer();
 
   let finalOutput = "";
   let accumulatedTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -407,6 +406,23 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
   }
   function withLabel(label: string, message: string): string {
     return label === ORCHESTRATOR_LABEL ? message : formatWithLabel(label, message);
+  }
+
+  // one ThinkingTimer per session — sharing a single timer across sessions
+  // conflated cross-session interleaving (parent thinks → child tool_call,
+  // or child returns → parent dispatches next) as parent thinking time. each
+  // timer formats its log lines through the session label so the "thought
+  // for X" attribution is visible in the merged stream.
+  const thinkingTimers = new Map<string, ThinkingTimer>();
+  function timerFor(label: string): ThinkingTimer {
+    let t = thinkingTimers.get(label);
+    if (!t) {
+      const formatLine = (line: string) =>
+        label === ORCHESTRATOR_LABEL ? line : formatWithLabel(label, line);
+      t = new ThinkingTimer(formatLine);
+      thinkingTimers.set(label, t);
+    }
+    return t;
   }
 
   // tracks per-task dispatch metadata so the matching tool_result can log a
@@ -634,7 +650,7 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
         });
       }
 
-      thinkingTimer.markToolCall();
+      timerFor(label).markToolCall();
       const inputFormatted = formatJsonValue(event.part?.state?.input || {});
       const toolCallLine =
         inputFormatted !== "{}" ? `» ${toolName}(${inputFormatted})` : `» ${toolName}()`;
@@ -671,7 +687,7 @@ async function runOpenCode(params: RunParams): Promise<AgentResult> {
       const output = event.part?.state?.output || event.output;
       const label = eventLabel(event);
 
-      thinkingTimer.markToolResult();
+      timerFor(label).markToolResult();
 
       // surface subagent completion at info level — opencode otherwise hides
       // per-task timing in debug-only logs, so a parallel multi-lens fan-out

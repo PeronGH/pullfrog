@@ -67,38 +67,68 @@ export function deriveLabelFromTaskInput(input: TaskDispatchInput): string {
 }
 
 /**
- * Stateful tracker mapping sessionIDs to human labels.
+ * Stateful tracker mapping subagent activity back to human-readable labels.
  *
- * Lifecycle:
- *   - First call to `labelFor()` returns ORCHESTRATOR_LABEL and binds that
- *     sessionID to it. Every subsequent event from that session gets the
- *     same label.
- *   - When the orchestrator emits a Task tool_use, the harness calls
- *     `recordTaskDispatch()` to push the dispatch's derived label onto a
- *     pending FIFO queue.
- *   - The next previously-unseen sessionID consumes the head of the queue.
- *   - If `labelFor()` is called for a new session with an empty queue
- *     (e.g. a subagent emitted events before the parent's tool_use was
- *     parsed, or the runtime spawned a session we didn't expect), the
- *     labeler falls back to `subagent#N` so log lines remain attributable.
+ * Two attribution channels are supported because the runtimes differ:
+ *
+ *   - **OpenCode** spawns each subagent as its own opencode `Session` with
+ *     a distinct `sessionID`. The harness records each Task dispatch into a
+ *     pending FIFO queue; the next previously-unseen sessionID consumes the
+ *     head of the queue and binds it to that label.
+ *
+ *   - **Claude Code** runs subagents inside the orchestrator's session — they
+ *     all share `session_id` — and instead stamps every subagent message with
+ *     `parent_tool_use_id` pointing at the Agent tool_use id that spawned them.
+ *     The harness binds each Agent tool_use id to its dispatched label up
+ *     front, then `labelFor` looks the label up directly when an event arrives
+ *     carrying that `parent_tool_use_id`.
+ *
+ * `labelFor(sessionID, parentToolUseId?)` accepts both: when
+ * `parentToolUseId` is set and known it short-circuits to the direct mapping;
+ * otherwise it falls through to the FIFO/sessionID path.
  */
 export class SessionLabeler {
   private readonly labels = new Map<string, string>();
+  private readonly labelsByToolUseId = new Map<string, string>();
   private readonly pendingLabels: string[] = [];
   private fallbackCounter = 0;
 
-  recordTaskDispatch(input: TaskDispatchInput): string {
+  /**
+   * Record a Task/Agent tool dispatch.
+   *
+   * @param input  Task tool input — used to derive the lens label.
+   * @param toolUseId  Optional Agent tool_use id. When provided, future events
+   *                   carrying `parent_tool_use_id === toolUseId` resolve
+   *                   directly to this label without consuming the FIFO queue
+   *                   (Claude path). Always also pushed to the FIFO queue so
+   *                   the OpenCode path still works when toolUseId is absent.
+   */
+  recordTaskDispatch(input: TaskDispatchInput, toolUseId?: string | null): string {
     const label = deriveLabelFromTaskInput(input);
     this.pendingLabels.push(label);
+    if (toolUseId) this.labelsByToolUseId.set(toolUseId, label);
     return label;
   }
 
   /**
-   * Return a label for the given sessionID. Binds on first call.
-   * Pass undefined/empty for events that lack a session id — the caller
-   * gets ORCHESTRATOR_LABEL so the line is still attributable.
+   * Return a label for the given event.
+   *
+   * @param sessionID         Session id from the event (OpenCode: per-session;
+   *                          Claude: shared across orchestrator + subagents).
+   * @param parentToolUseId   Claude's `parent_tool_use_id` — non-null on
+   *                          subagent messages. When set and known, takes
+   *                          priority over the FIFO/sessionID path.
    */
-  labelFor(sessionID: string | undefined | null): string {
+  labelFor(sessionID: string | undefined | null, parentToolUseId?: string | null): string {
+    // Claude path: subagent messages carry parent_tool_use_id pointing at
+    // the Agent tool_use that spawned them. resolve directly without
+    // touching the sessionID-keyed map (which is bound to the orchestrator
+    // for the shared session_id and would otherwise misattribute).
+    if (parentToolUseId) {
+      const direct = this.labelsByToolUseId.get(parentToolUseId);
+      if (direct) return direct;
+    }
+
     if (!sessionID) return ORCHESTRATOR_LABEL;
     const existing = this.labels.get(sessionID);
     if (existing) return existing;
