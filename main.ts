@@ -30,7 +30,7 @@ import { createOctokit, writeGitHubUsageSummaryToFile } from "./utils/github.ts"
 import { resolveInstructions } from "./utils/instructions.ts";
 import { readLearningsFile, seedLearningsFile } from "./utils/learnings.ts";
 import { executeLifecycleHook } from "./utils/lifecycle.ts";
-import { normalizeEnv } from "./utils/normalizeEnv.ts";
+import { normalizeEnv, sanitizeSecret } from "./utils/normalizeEnv.ts";
 import { aggregateUsage, patchWorkflowRunFields } from "./utils/patchWorkflowRunFields.ts";
 import { resolvePayload, resolvePromptInput } from "./utils/payload.ts";
 import { isRouterKeylimitExhaustedError } from "./utils/providerErrors.ts";
@@ -559,12 +559,15 @@ export async function main(): Promise<MainResult> {
   const runContext = await resolveRunContextData({ octokit: initialOctokit, token: jobToken });
   timer.checkpoint("runContextData");
 
-  // inject account-level secrets into process.env (YAML secrets take precedence)
+  // inject account-level secrets into process.env (YAML secrets take precedence).
+  // sanitizeSecret trims + masks so accidental trailing whitespace doesn't leak
+  // through GitHub Actions' line-based log masking. whitespace-only values
+  // return null and skip injection so the user sees a clear missing-key error.
   if (runContext.dbSecrets) {
     for (const [key, value] of Object.entries(runContext.dbSecrets)) {
       if (!process.env[key]) {
-        process.env[key] = value;
-        core.setSecret(value);
+        const sanitized = sanitizeSecret(key, value);
+        if (sanitized !== null) process.env[key] = sanitized;
       }
     }
     const count = Object.keys(runContext.dbSecrets).length;
