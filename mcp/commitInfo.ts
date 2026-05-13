@@ -16,7 +16,7 @@ export function CommitInfoTool(ctx: ToolContext) {
     description:
       "Retrieve commit metadata and diff via GitHub API. Use this instead of git show for reviewing commits - " +
       "it works with shallow clones and shows the actual changes in the commit. Returns diffPath pointing to formatted diff file. " +
-      'Example: `get_commit_info({ sha: "2a6ab5d06ba64dd987bd88c4403287" })`.',
+      'Example: `get_commit_info({ sha: "2a6ab5d" })`.',
     parameters: CommitInfo,
     execute: execute(async ({ sha }) => {
       const response = await ctx.octokit.rest.repos.getCommit({
