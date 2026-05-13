@@ -72,17 +72,27 @@ function writeMcpConfig(ctx: AgentRunContext): string {
 
 /**
  * Build the `--agents` JSON definition for the `reviewfrog` subagent.
+ *
+ * The Claude Code path always runs against an Anthropic model (see
+ * resolveAgent), so we hardcode the cheaper-sibling downshift: lenses run
+ * on Sonnet, the orchestrator stays on whatever model `--model` was passed.
+ *
+ * Per-call model override is also possible (Task tool's `model` arg accepts
+ * 'sonnet' | 'opus' | 'haiku') and takes precedence over what's set here —
+ * we don't pass it; the per-subagent `model` field is the right default.
+ *
  * The non-mutative + non-recursive contract is enforced by the prose system
- * prompt baked into the agent — see action/agents/reviewer.ts for why we no
- * longer wire per-agent `disallowedTools` here.
+ * prompt baked into the agent — see action/agents/reviewer.ts for why we
+ * no longer wire per-agent `disallowedTools` here.
  */
 function buildAgentsJson(): string {
   const agents = {
     [REVIEWER_AGENT_NAME]: {
       description:
-        "Read-only review subagent for self-review and lens-based code review. " +
+        "Read-only review subagent for lens-based code review (correctness, security, billing-subsystem, etc.). " +
         "Reads only — no writes, no state-changing shell or MCP calls, no nested subagent dispatch.",
       prompt: REVIEWER_SYSTEM_PROMPT,
+      model: "claude-sonnet-4-6",
     },
   };
   return JSON.stringify(agents);

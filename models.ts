@@ -24,6 +24,13 @@ export interface ModelAlias {
   isFree: boolean;
   /** slug of a replacement model — presence implies this model is deprecated */
   fallback: string | undefined;
+  /** alias key (within same provider) of the cheaper sibling reviewfrog should
+   * use as its lens-fanout subagent. e.g. claude-opus → "claude-sonnet". */
+  subagentModel: string | undefined;
+  /** hide from selectable lists (UI dropdowns, CLI pickers). does NOT affect
+   * resolution — for that use `fallback`. used for internal-only tier targets
+   * (e.g. gpt-5.4 as a subagent target without exposing it to users). */
+  hidden: boolean;
 }
 
 interface ModelDef {
@@ -37,6 +44,11 @@ interface ModelDef {
   isFree?: boolean;
   /** slug of a replacement model — presence implies this model is deprecated */
   fallback?: string;
+  /** alias key (within same provider) of the cheaper sibling reviewfrog should
+   * use as its lens-fanout subagent (e.g. claude-opus → "claude-sonnet"). */
+  subagentModel?: string;
+  /** hide from selectable lists. does NOT affect resolution; for that use `fallback`. */
+  hidden?: boolean;
 }
 
 export interface ProviderConfig {
@@ -61,6 +73,7 @@ export const providers = {
         resolve: "anthropic/claude-opus-4-7",
         openRouterResolve: "openrouter/anthropic/claude-opus-4.7",
         preferred: true,
+        subagentModel: "claude-sonnet",
       },
       "claude-sonnet": {
         displayName: "Claude Sonnet",
@@ -83,11 +96,22 @@ export const providers = {
         resolve: "openai/gpt-5.5",
         openRouterResolve: "openrouter/openai/gpt-5.5",
         preferred: true,
+        subagentModel: "gpt-5.4",
       },
       "gpt-pro": {
         displayName: "GPT Pro",
         resolve: "openai/gpt-5.5-pro",
         openRouterResolve: "openrouter/openai/gpt-5.5-pro",
+        subagentModel: "gpt",
+      },
+      // hidden subagent target — `gpt` lenses run against this. surfacing
+      // it in the picker would just confuse users (it's the prior-flagship,
+      // and they already have `gpt` and `gpt-mini` to choose from).
+      "gpt-5.4": {
+        displayName: "GPT 5.4",
+        resolve: "openai/gpt-5.4",
+        openRouterResolve: "openrouter/openai/gpt-5.4",
+        hidden: true,
       },
       "gpt-mini": {
         displayName: "GPT Mini",
@@ -126,6 +150,7 @@ export const providers = {
         resolve: "google/gemini-3.1-pro-preview",
         openRouterResolve: "openrouter/google/gemini-3.1-pro-preview",
         preferred: true,
+        subagentModel: "gemini-flash",
       },
       "gemini-flash": {
         displayName: "Gemini Flash",
@@ -214,6 +239,7 @@ export const providers = {
         displayName: "Claude Opus",
         resolve: "opencode/claude-opus-4-7",
         openRouterResolve: "openrouter/anthropic/claude-opus-4.7",
+        subagentModel: "claude-sonnet",
       },
       "claude-sonnet": {
         displayName: "Claude Sonnet",
@@ -229,11 +255,20 @@ export const providers = {
         displayName: "GPT",
         resolve: "opencode/gpt-5.5",
         openRouterResolve: "openrouter/openai/gpt-5.5",
+        subagentModel: "gpt-5.4",
       },
       "gpt-pro": {
         displayName: "GPT Pro",
         resolve: "opencode/gpt-5.5-pro",
         openRouterResolve: "openrouter/openai/gpt-5.5-pro",
+        subagentModel: "gpt",
+      },
+      // hidden subagent target — see openai provider above for context.
+      "gpt-5.4": {
+        displayName: "GPT 5.4",
+        resolve: "opencode/gpt-5.4",
+        openRouterResolve: "openrouter/openai/gpt-5.4",
+        hidden: true,
       },
       "gpt-mini": {
         displayName: "GPT Mini",
@@ -257,6 +292,7 @@ export const providers = {
         displayName: "Gemini Pro",
         resolve: "opencode/gemini-3.1-pro",
         openRouterResolve: "openrouter/google/gemini-3.1-pro-preview",
+        subagentModel: "gemini-flash",
       },
       "gemini-flash": {
         displayName: "Gemini Flash",
@@ -297,6 +333,7 @@ export const providers = {
         resolve: "openrouter/anthropic/claude-opus-4.7",
         openRouterResolve: "openrouter/anthropic/claude-opus-4.7",
         preferred: true,
+        subagentModel: "claude-sonnet",
       },
       "claude-sonnet": {
         displayName: "Claude Sonnet",
@@ -312,11 +349,20 @@ export const providers = {
         displayName: "GPT",
         resolve: "openrouter/openai/gpt-5.5",
         openRouterResolve: "openrouter/openai/gpt-5.5",
+        subagentModel: "gpt-5.4",
       },
       "gpt-pro": {
         displayName: "GPT Pro",
         resolve: "openrouter/openai/gpt-5.5-pro",
         openRouterResolve: "openrouter/openai/gpt-5.5-pro",
+        subagentModel: "gpt",
+      },
+      // hidden subagent target — see openai provider above for context.
+      "gpt-5.4": {
+        displayName: "GPT 5.4",
+        resolve: "openrouter/openai/gpt-5.4",
+        openRouterResolve: "openrouter/openai/gpt-5.4",
+        hidden: true,
       },
       "gpt-mini": {
         displayName: "GPT Mini",
@@ -345,6 +391,7 @@ export const providers = {
         displayName: "Gemini Pro",
         resolve: "openrouter/google/gemini-3.1-pro-preview",
         openRouterResolve: "openrouter/google/gemini-3.1-pro-preview",
+        subagentModel: "gemini-flash",
       },
       "gemini-flash": {
         displayName: "Gemini Flash",
@@ -432,6 +479,11 @@ export const modelAliases: ModelAlias[] = Object.entries(providers).flatMap(
       preferred: def.preferred ?? false,
       isFree: def.isFree ?? false,
       fallback: def.fallback,
+      // subagentModel is stored as an alias key local to the provider; expand
+      // here to a fully-qualified slug so callers can look up the target alias
+      // directly without re-deriving the provider.
+      subagentModel: def.subagentModel ? `${providerKey}/${def.subagentModel}` : undefined,
+      hidden: def.hidden ?? false,
     }))
 );
 
@@ -451,7 +503,7 @@ const MAX_FALLBACK_DEPTH = 10;
  * use this in UI display sites (dropdown trigger labels, PR-comment footers,
  * etc.) so a deprecated stored slug renders as the model the user actually
  * runs against — not the historical name. selectable lists should still hide
- * deprecated aliases by filtering on `!a.fallback`.
+ * deprecated and internal-only aliases by filtering on `!a.fallback && !a.hidden`.
  */
 export function resolveDisplayAlias(slug: string): ModelAlias | undefined {
   let current = slug;

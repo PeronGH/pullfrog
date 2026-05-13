@@ -24,7 +24,7 @@ function buildProviders(): CliProvider[] {
   return Object.entries(providers)
     .filter(([key]) => key !== "opencode" && key !== "openrouter")
     .map(([key, config]: [string, ProviderConfig]) => {
-      const aliases = modelAliases.filter((a) => a.provider === key && !a.fallback);
+      const aliases = modelAliases.filter((a) => a.provider === key && !a.fallback && !a.hidden);
       const recommended = aliases.find((a) => a.preferred);
       const sorted = [...aliases].sort((a, b) => {
         if (a.preferred && !b.preferred) return -1;
