@@ -17,7 +17,11 @@ import {
 } from "./utils/activity.ts";
 import { resolveAgent, resolveModel } from "./utils/agent.ts";
 import { apiFetch } from "./utils/apiFetch.ts";
-import { validateAgentApiKey } from "./utils/apiKeys.ts";
+import {
+  formatApiKeyErrorSummary,
+  isApiKeyAuthError,
+  validateAgentApiKey,
+} from "./utils/apiKeys.ts";
 import { isLocalApiUrl } from "./utils/apiUrl.ts";
 import { resolveBody } from "./utils/body.ts";
 import { formatUsageSummary, log, writeSummary } from "./utils/cli.ts";
@@ -1035,10 +1039,15 @@ export async function main(): Promise<MainResult> {
     // the comment is still around to update; reportErrorToComment sets
     // wasUpdated=true and the !result.success guard skips deletion.
     if (!result.success && toolContext && toolState.progressComment) {
-      await reportErrorToComment({
-        toolState,
-        error: result.error || "agent run failed",
-      }).catch((error) => {
+      const rawError = result.error || "agent run failed";
+      const errorBody = isApiKeyAuthError(rawError)
+        ? formatApiKeyErrorSummary({
+            owner: runContext.repo.owner,
+            name: runContext.repo.name,
+            raw: rawError,
+          })
+        : rawError;
+      await reportErrorToComment({ toolState, error: errorBody }).catch((error) => {
         log.debug(`failure error report failed: ${error}`);
       });
     }
@@ -1114,11 +1123,20 @@ export async function main(): Promise<MainResult> {
       ? new BillingError(errorMessage, { code: "router_keylimit_exhausted" })
       : null;
 
+    const apiKeyErrorSummary =
+      !billingError && isApiKeyAuthError(errorMessage)
+        ? formatApiKeyErrorSummary({
+            owner: runContext.repo.owner,
+            name: runContext.repo.name,
+            raw: errorMessage,
+          })
+        : null;
+
     // best-effort summary — write the error so it's visible in the Actions summary tab
     try {
       const errorSummary = billingError
         ? formatBillingErrorSummary(billingError, runContext.repo.owner)
-        : `### ❌ Pullfrog failed\n\n\`\`\`\n${errorMessage}\n\`\`\``;
+        : (apiKeyErrorSummary ?? `### ❌ Pullfrog failed\n\n\`\`\`\n${errorMessage}\n\`\`\``);
       const usageSummary = formatUsageSummary(toolState.usageEntries);
       const parts = [errorSummary, toolState.lastProgressBody, usageSummary].filter(Boolean);
       await writeSummary(parts.join("\n\n"));
@@ -1127,7 +1145,7 @@ export async function main(): Promise<MainResult> {
     try {
       const commentBody = billingError
         ? formatBillingErrorSummary(billingError, runContext.repo.owner)
-        : errorMessage;
+        : (apiKeyErrorSummary ?? errorMessage);
       await reportErrorToComment({ toolState, error: commentBody });
     } catch {
       // error reporting failed, but don't let it mask the original error

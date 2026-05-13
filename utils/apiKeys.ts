@@ -3,26 +3,19 @@ import { getApiUrl } from "./apiUrl.ts";
 
 const knownApiKeys: Set<string> = new Set(Object.values(providers).flatMap((p) => [...p.envVars]));
 
+/** marker prefix on the throw message for the catch-side reclassification path */
+const MISSING_KEY_MARKER = "no API key found";
+
+/** Markdown body used for both the thrown error and the formatted PR comment summary. */
 function buildMissingApiKeyError(params: { owner: string; name: string }): string {
-  const apiUrl = getApiUrl();
-  const settingsUrl = `${apiUrl}/console/${params.owner}/${params.name}`;
+  const githubSecretsUrl = `https://github.com/${params.owner}/${params.name}/settings/secrets/actions`;
+  const settingsUrl = `${getApiUrl()}/console/${params.owner}/${params.name}`;
 
-  const githubRepoUrl = `https://github.com/${params.owner}/${params.name}`;
-  const githubSecretsUrl = `${githubRepoUrl}/settings/secrets/actions`;
-
-  return `no API key found. Pullfrog requires at least one LLM provider API key.
-
-to fix this, add the required secret to your GitHub repository:
-
-1. go to: ${githubSecretsUrl}
-2. click "New repository secret"
-3. set the name to your provider's key (e.g., \`ANTHROPIC_API_KEY\`, \`OPENAI_API_KEY\`, \`GEMINI_API_KEY\`)
-4. set the value to your API key
-5. click "Add secret"
-
-configure your model at ${settingsUrl}
-
-for full setup instructions, see https://docs.pullfrog.com/keys`;
+  return [
+    `**${MISSING_KEY_MARKER}** — Pullfrog needs at least one LLM provider API key (e.g. \`ANTHROPIC_API_KEY\`, \`OPENAI_API_KEY\`, \`GEMINI_API_KEY\`) configured as a GitHub Actions secret.`,
+    "",
+    `[Open repo secrets →](${githubSecretsUrl}) · [Configure model →](${settingsUrl}) · [Setup docs →](https://docs.pullfrog.com/keys)`,
+  ].join("\n");
 }
 
 function hasEnvVar(name: string): boolean {
@@ -58,4 +51,45 @@ export function validateAgentApiKey(params: {
   if (!hasAnyKey) {
     throw new Error(buildMissingApiKeyError({ owner: params.owner, name: params.name }));
   }
+}
+
+/**
+ * Detect agent-runtime auth failures that should be reformatted as an actionable
+ * key-fix CTA before being shown to the user. Covers the two shapes we see:
+ *   - missing key (validateAgentApiKey throw): contains MISSING_KEY_MARKER
+ *   - revoked / invalid key (Claude CLI 401 surfaced via api_error_status):
+ *     "Invalid API key · Fix external API key" + similar provider variants
+ */
+export function isApiKeyAuthError(text: string): boolean {
+  if (!text) return false;
+  return (
+    text.includes(MISSING_KEY_MARKER) ||
+    /Invalid API key/i.test(text) ||
+    /\bUser not found\b/i.test(text) ||
+    /\bInvalid authentication\b/i.test(text)
+  );
+}
+
+/**
+ * Friendly Markdown summary for both the missing-key and invalid-key cases.
+ * Used in the catch / result-failure paths in `main.ts` to overwrite the raw
+ * agent error before it's posted to the PR progress comment.
+ */
+export function formatApiKeyErrorSummary(params: {
+  owner: string;
+  name: string;
+  raw: string;
+}): string {
+  if (params.raw.includes(MISSING_KEY_MARKER)) {
+    return buildMissingApiKeyError({ owner: params.owner, name: params.name });
+  }
+
+  const githubSecretsUrl = `https://github.com/${params.owner}/${params.name}/settings/secrets/actions`;
+  const settingsUrl = `${getApiUrl()}/console/${params.owner}/${params.name}`;
+
+  return [
+    `**Your LLM provider API key was rejected (401).** Rotate the key in your provider dashboard, then update the matching GitHub Actions secret.`,
+    "",
+    `[Update repo secret →](${githubSecretsUrl}) · [Model settings →](${settingsUrl}) · [Setup docs →](https://docs.pullfrog.com/keys)`,
+  ].join("\n");
 }
