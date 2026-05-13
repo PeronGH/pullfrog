@@ -10,8 +10,10 @@ permissions:
 
 jobs:
   trigger:
-    # skip if pushed by our bot (breaks the loop)
-    if: github.actor != 'pullfrog[bot]'
+    # only run in the upstream publish target (forks inherit this file but
+    # can't dispatch into pullfrog/app), and skip if pushed by our bot (breaks
+    # the loop).
+    if: github.repository == 'pullfrog/pullfrog' && github.actor != 'pullfrog[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

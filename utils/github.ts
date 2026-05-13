@@ -99,6 +99,22 @@ type AcquireTokenOptions = {
   permissions?: GitHubAppPermissions;
 };
 
+/**
+ * Thrown when our token-exchange endpoint returns a non-2xx response.
+ * The retry policy in `acquireNewToken` looks for this concrete type to
+ * skip retries — 4xx is terminal user state (not-installed, not-authorized)
+ * and 5xx is rare enough that re-running the workflow is the right escape
+ * hatch. Genuine network failures throw plain `Error` and stay retryable.
+ */
+class TokenExchangeError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "TokenExchangeError";
+    this.status = status;
+  }
+}
+
 async function acquireTokenViaOIDC(opts?: AcquireTokenOptions): Promise<string> {
   const oidcToken = await core.getIDToken("pullfrog-api");
 
@@ -128,7 +144,22 @@ async function acquireTokenViaOIDC(opts?: AcquireTokenOptions): Promise<string> 
     clearTimeout(timeoutId);
 
     if (!tokenResponse.ok) {
-      throw new Error(`Token exchange failed: ${tokenResponse.status} ${tokenResponse.statusText}`);
+      // prefer the server-side `error` field — it's the single source of
+      // truth for the install URL (uses GITHUB_APP_INSTALL_URL, which
+      // varies per env / GITHUB_APP_SLUG). fall back to a generic message
+      // if the body isn't JSON or doesn't carry an `error` field.
+      let serverMessage: string | undefined;
+      try {
+        const body = (await tokenResponse.json()) as { error?: unknown };
+        if (typeof body.error === "string") serverMessage = body.error;
+      } catch {
+        // body wasn't JSON — fall through to the generic message
+      }
+      throw new TokenExchangeError(
+        tokenResponse.status,
+        serverMessage ??
+          `Token exchange failed: ${tokenResponse.status} ${tokenResponse.statusText}`
+      );
     }
 
     const tokenData = (await tokenResponse.json()) as InstallationToken;
@@ -333,13 +364,20 @@ export async function acquireNewToken(opts?: AcquireTokenOptions): Promise<strin
   if (isOIDCAvailable()) {
     return await retry(() => acquireTokenViaOIDC(opts), {
       label: "token exchange",
-      shouldRetry: (error) =>
-        error instanceof Error &&
-        (error.name === "AbortError" ||
-          error.message.includes("fetch failed") ||
-          error.message.includes("ECONNRESET") ||
-          error.message.includes("ETIMEDOUT") ||
-          error.message.includes("Token exchange failed")),
+      shouldRetry: (error) => {
+        // 4xx is terminal user state (app not installed, permissions wrong) —
+        // retrying just triples our log noise and the user's CI bill (see
+        // #693). 5xx/429 are transient (vercel cold start, github outage,
+        // rate limit) and should ride the existing backoff.
+        if (error instanceof TokenExchangeError) return error.status >= 500 || error.status === 429;
+        return (
+          error instanceof Error &&
+          (error.message.includes("timed out") ||
+            error.message.includes("fetch failed") ||
+            error.message.includes("ECONNRESET") ||
+            error.message.includes("ETIMEDOUT"))
+        );
+      },
     });
   } else {
     // local development via GitHub App
