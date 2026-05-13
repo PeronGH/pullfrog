@@ -90,10 +90,13 @@ function stripProviderPrefix(specifier: string): string {
   return slashIndex > 0 ? specifier.slice(slashIndex + 1) : specifier;
 }
 
-// `max` effort is supported on Opus 4.6 / 4.7; other models fall back to `high`.
-// claude-code deny-lists older opus/sonnet generations from `max` at invocation time.
-function resolveEffort(model: string | undefined): "max" | "high" {
-  if (model?.includes("opus")) return "max";
+// `high` is the model's tuned default ("equivalent to not setting the parameter"
+// per Anthropic docs). `max` is "absolute maximum capability with no constraints
+// on token spending" — meaningfully slower and burns more thinking budget per
+// turn. We default everyone to `high`; PRs that genuinely need full-send can
+// opt in via a future per-run override rather than paying the wall-time cost on
+// every Opus run.
+function resolveEffort(_model: string | undefined): "high" {
   return "high";
 }
 
