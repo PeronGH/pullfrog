@@ -221,7 +221,8 @@ export function PushBranchTool(ctx: ToolContext) {
       "If specifying branchName, use the LOCAL branch name (e.g., 'pr-1'), not the remote branch name. " +
       "The correct remote and remote branch are determined automatically from branch config set by checkout_pr. " +
       "Requires a clean working tree. Runs the repository prepush hook (if configured) before the network push — hook failure means tests/lint or similar in that script failed, not necessarily a Pullfrog timeout. " +
-      "Never force push unless explicitly requested. Pushes to the default branch are blocked in restricted mode.",
+      "Never force push unless explicitly requested. Pushes to the default branch are blocked in restricted mode. " +
+      "If the response reports a timeout, the underlying push may have actually succeeded — verify with `git log origin/<branch>` (or this tool with command 'log') before retrying, otherwise you'll push a duplicate.",
     parameters: PushBranch,
     execute: execute(async ({ branchName, force }) => {
       // permission check
@@ -444,7 +445,12 @@ const subcommandPattern = regex("^[a-z][a-z0-9-]*$");
 
 const Git = type({
   command: type(subcommandPattern).describe("Git command (e.g., 'status', 'log', 'diff')"),
-  args: type.string.array().describe("Additional arguments for the git command").optional(),
+  args: type.string
+    .array()
+    .describe(
+      'Additional arguments for the git command, as a JSON array of strings (NOT a single string). e.g. args: ["HEAD"], args: ["--oneline", "-20"]. Passing a single string fails validation.'
+    )
+    .optional(),
 });
 
 export function GitTool(ctx: ToolContext) {

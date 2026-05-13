@@ -593,7 +593,9 @@ export function CheckoutPrTool(ctx: ToolContext) {
     name: "checkout_pr",
     description:
       "Checkout a pull request branch locally. This fetches the PR branch and sets up push configuration for fork PRs. " +
-      "Returns diffPath pointing to the formatted diff file.",
+      "Returns diffPath pointing to the formatted diff file. " +
+      "Transient fetch timeouts are common — retry the same call up to a few times before treating the failure as terminal. " +
+      "If the error mentions `.git/shallow.lock: File exists` or `.git/index.lock: File exists`, that's a stale lock from a prior timed-out fetch — remove it via the shell tool (`rm -f .git/shallow.lock .git/index.lock`) and retry.",
     parameters: CheckoutPr,
     execute: execute(async ({ pull_number }) => {
       const prResponse = await ctx.octokit.rest.pulls.get({

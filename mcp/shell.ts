@@ -15,7 +15,9 @@ import { execute, tool } from "./shared.ts";
 export const ShellParams = type({
   command: "string",
   description: "string",
-  "timeout?": "number",
+  "timeout?": type.number.describe(
+    "Timeout in MILLISECONDS (not seconds). Default 30000 (30s), max 120000 (2m). e.g. timeout: 180000 for 3 minutes; timeout: 180 means 180ms and will kill the process almost immediately."
+  ),
   "working_directory?": "string",
   "background?": "boolean",
 });

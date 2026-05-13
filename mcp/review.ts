@@ -320,14 +320,16 @@ export const CreatePullRequestReview = type({
     )
     .optional(),
   commit_id: type.string
-    .describe("Optional SHA of the commit being reviewed. Defaults to latest.")
+    .describe(
+      "Optional SHA of the commit being reviewed. Defaults to latest. Must be the FULL 40-character SHA — abbreviated SHAs are rejected by GitHub with `422 Unprocessable Entity`. The PR-synchronize event payload's `head_sha` is already full-length."
+    )
     .optional(),
   comments: type({
     path: type.string.describe(
       "The file path to comment on (relative to repo root). Must be a file that appears in the PR diff."
     ),
     line: type.number.describe(
-      "Line number to comment on. For multi-line ranges, this is the end line. Use NEW column from diff format."
+      "Line number to comment on. For multi-line ranges, this is the end line. Use NEW column from diff format. MUST sit inside a `@@` hunk in the PR diff — anchors on context-only or untouched lines are dropped silently (the rest of the review still posts; dropped entries are reported under `droppedComments` in the response)."
     ),
     side: type
       .enumerated("LEFT", "RIGHT")
@@ -345,7 +347,7 @@ export const CreatePullRequestReview = type({
       .optional(),
     start_line: type.number
       .describe(
-        "Start line for multi-line comment ranges. Omit for single-line comments. The range [start_line, line] defines which lines a suggestion replaces."
+        "Start line for multi-line comment ranges. Omit for single-line comments. The range [start_line, line] defines which lines a suggestion replaces. BOTH `start_line` AND `line` must sit inside the SAME `@@` hunk — a `start_line` outside the hunk causes the whole comment to be dropped even when `line` is valid. If you need to comment on context just above/below a hunk, shrink the range to a single line that is provably modified."
       )
       .optional(),
   })

@@ -770,12 +770,10 @@ export async function main(): Promise<MainResult> {
         current: runContext.repoSettings.learnings,
       });
       toolState.learningsFilePath = learningsPath;
-      try {
-        toolState.learningsSeed = await readFile(learningsPath, "utf8");
-      } catch {
-        // intentionally empty — learningsSeed stays undefined, persistLearnings
-        // will treat seed as "" and persist any non-empty content
-      }
+      // file on disk is the verbatim DB body, so the seed used for
+      // change-detection is just `current ?? ""` (trimmed). persistLearnings
+      // byte-compares against the trimmed read-back to skip no-op PATCHes.
+      toolState.learningsSeed = (runContext.repoSettings.learnings ?? "").trim();
       log.info(
         `» learnings seeded at ${learningsPath} (existing=${runContext.repoSettings.learnings ? "yes" : "no"})`
       );
@@ -839,6 +837,7 @@ export async function main(): Promise<MainResult> {
       agentId,
       outputSchema,
       learningsFilePath: toolState.learningsFilePath ?? null,
+      learningsHeadings: runContext.repoSettings.learningsHeadings,
     });
     const logParts = [
       instructions.eventInstructions

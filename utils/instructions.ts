@@ -4,6 +4,7 @@ import { encode as toonEncode } from "@toon-format/toon";
 import { type AgentId, formatMcpToolRef, type PayloadEvent, pullfrogMcpName } from "../external.ts";
 import type { Mode } from "../modes.ts";
 import type { ResolvedPayload } from "./payload.ts";
+import type { LearningsHeading } from "./runContext.ts";
 import type { RunContextData } from "./runContextData.ts";
 
 interface InstructionsContext {
@@ -16,6 +17,10 @@ interface InstructionsContext {
    * couldn't be seeded for some reason. main.ts always seeds, so in
    * practice this is always set; the null case keeps the type honest. */
   learningsFilePath: string | null;
+  /** server-parsed TOC for the body of the learnings tmpfile. rendered
+   * inline into the LEARNINGS prompt section so the agent can `read_file`
+   * targeted line ranges instead of pulling the whole file into context. */
+  learningsHeadings: LearningsHeading[];
 }
 
 interface PromptContext extends InstructionsContext {
@@ -369,6 +374,39 @@ export interface ResolvedInstructions {
   runtime: string;
 }
 
+/** render the heading list as an indented bullet TOC. ranges shown in
+ * parentheses (`(L3-L18)`); the start line is always the heading line
+ * itself, so reading the listed range gives the agent the heading +
+ * body together. shallowest heading depth in the body sits at the root
+ * column; deeper levels indent by `(depth - rootDepth) * 2` spaces. */
+export function renderLearningsToc(headings: LearningsHeading[]): string {
+  if (headings.length === 0) return "";
+  const rootDepth = Math.min(...headings.map((h) => h.depth));
+  return headings
+    .map((h) => {
+      const indent = " ".repeat((h.depth - rootDepth) * 2);
+      return `${indent}- ${h.title} (L${h.startLine}-L${h.endLine})`;
+    })
+    .join("\n");
+}
+
+/** assemble the LEARNINGS prompt section: file path + intro + either
+ * the rendered heading TOC (when the body has structure) or a no-headings
+ * affordance pointing the agent at the reflection turn for restructuring.
+ * empty string when the seed step failed and there's no path to surface. */
+export function buildLearningsSection(ctx: {
+  filePath: string | null;
+  headings: LearningsHeading[];
+}): string {
+  if (!ctx.filePath) return "";
+  const intro = `Repo-level learnings accumulated by previous agent runs live at \`${ctx.filePath}\`. Use this file as durable context (test commands, conventions, gotchas, architecture notes).`;
+  const tocBody =
+    ctx.headings.length === 0
+      ? "(no headings yet — file is empty or a flat list. read the whole file. during the post-run reflection turn, structure it with `## ` / `### ` headings so future runs can read targeted ranges.)"
+      : `Read targeted line ranges via your native file tool — do NOT slurp the whole file. Each range starts at the section heading line, so reading the range gives you heading + body together.\n\n${renderLearningsToc(ctx.headings)}`;
+  return `************* LEARNINGS *************\n\n${intro}\n\n${tocBody}`;
+}
+
 function assembleFullPrompt(ctx: {
   toc: string;
   task: string;
@@ -376,17 +414,18 @@ function assembleFullPrompt(ctx: {
   eventContext: string;
   system: string;
   learningsFilePath: string | null;
+  learningsHeadings: LearningsHeading[];
   runtime: string;
 }): string {
-  // the LEARNINGS section is intentionally tiny — just the file path and a
-  // one-line "read it" instruction. embedding the contents would re-inflate
-  // the prompt every run (the previous design's failure mode) and clutter
-  // CI logs. the agent reads the file with its native file tool; the
-  // post-run reflection turn (action/agents/postRun.ts) is where editing
-  // is encouraged, with the prune-stale framing.
-  const learningsSection = ctx.learningsFilePath
-    ? `************* LEARNINGS *************\n\nRepo-level learnings accumulated by previous agent runs live at \`${ctx.learningsFilePath}\`. Read this file early and let the entries inform your approach (test commands, conventions, gotchas, etc.). The file may be empty if no learnings have been collected yet.`
-    : "";
+  // server-parsed TOC is rendered inline so the agent can target line
+  // ranges via its native file tool. the file body itself is never
+  // inlined — that would re-inflate context every run and clutter CI
+  // logs. post-run reflection (action/agents/postRun.ts) is where
+  // editing is encouraged.
+  const learningsSection = buildLearningsSection({
+    filePath: ctx.learningsFilePath,
+    headings: ctx.learningsHeadings,
+  });
 
   const runtimeSection = `************* RUNTIME *************\n\n${ctx.runtime}`;
 
@@ -421,7 +460,10 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
     tocEntries.push({ label: "EVENT CONTEXT", description: "related PR/issue data" });
   tocEntries.push({ label: "SYSTEM", description: "persona, security, tools, workflow rules" });
   if (pctx.learningsFilePath)
-    tocEntries.push({ label: "LEARNINGS", description: "repo-specific knowledge file path" });
+    tocEntries.push({
+      label: "LEARNINGS",
+      description: "repo-specific knowledge file path + heading TOC",
+    });
   tocEntries.push({ label: "RUNTIME", description: "environment metadata" });
 
   const toc = buildToc(tocEntries);
@@ -433,6 +475,7 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
     eventContext,
     system,
     learningsFilePath: pctx.learningsFilePath,
+    learningsHeadings: pctx.learningsHeadings,
     runtime: pctx.runtime,
   });
 

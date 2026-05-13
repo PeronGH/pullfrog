@@ -9,6 +9,22 @@ export interface Mode {
   prompt: string;
 }
 
+/**
+ * server-parsed TOC entry for `Repo.learnings`. depth is 1-6 (h1-h6),
+ * line numbers are 1-indexed against the raw body. computed by
+ * `parseLearningsHeadings` in `utils/learningsToc.ts` (server side) and
+ * shipped over the run-context JSON boundary; the canonical declaration
+ * lives there. duplicated here because the action runtime can't reach
+ * across into the proprietary root-level codebase, and the JSON wire
+ * means typecheck can't enforce shape equality across both sides.
+ */
+export interface LearningsHeading {
+  depth: 1 | 2 | 3 | 4 | 5 | 6;
+  title: string;
+  startLine: number;
+  endLine: number;
+}
+
 export interface RepoSettings {
   model: string | null;
   modes: Mode[];
@@ -21,6 +37,7 @@ export interface RepoSettings {
   prApproveEnabled: boolean;
   modeInstructions: Record<string, string>;
   learnings: string | null;
+  learningsHeadings: LearningsHeading[];
   envAllowlist: string | null;
 }
 
@@ -61,6 +78,7 @@ const defaultSettings: RepoSettings = {
   prApproveEnabled: false,
   modeInstructions: {},
   learnings: null,
+  learningsHeadings: [],
   envAllowlist: null,
 };
 
@@ -127,6 +145,7 @@ export async function fetchRunContext(params: {
         postCheckoutScript: data.settings?.postCheckoutScript ?? null,
         prepushScript: data.settings?.prepushScript ?? null,
         stopScript: data.settings?.stopScript ?? null,
+        learningsHeadings: data.settings?.learningsHeadings ?? [],
       },
       apiToken: data.apiToken,
       oss: data.oss ?? false,
