@@ -2,7 +2,7 @@ import { regex } from "arkregex";
 import { type } from "arktype";
 import type { StoredPushDest } from "../toolState.ts";
 import { log } from "../utils/cli.ts";
-import { $git } from "../utils/gitAuth.ts";
+import { $git, $gitFetchWithDeepen } from "../utils/gitAuth.ts";
 import { executeLifecycleHook } from "../utils/lifecycle.ts";
 import { $ } from "../utils/shell.ts";
 import type { ToolContext } from "./server.ts";
@@ -510,21 +510,6 @@ const GitFetch = type({
   depth: type.number.describe("Fetch depth (for shallow clones)").optional(),
 });
 
-// when an agent-supplied depth is too shallow to reach the merge base, git
-// surfaces "Could not read <sha>" and "remote did not send all necessary
-// objects". detect both wordings so a single deepen retry can recover before
-// the error reaches the agent (issue #564). git emits the full OID via
-// oid_to_hex, so the bound is 40 (SHA-1) or 64 (SHA-256).
-const SHALLOW_UNREACHABLE_PATTERNS: RegExp[] = [
-  /Could not read [a-f0-9]{40,64}/,
-  /remote did not send all necessary objects/,
-];
-
-// large enough to clear the merge base on most real-world PRs without
-// downloading the full history; matches the fallback used by checkoutPrBranch
-// when the compare API is unavailable.
-const DEEPEN_RETRY_DEPTH = 1000;
-
 export function GitFetchTool(ctx: ToolContext) {
   return tool({
     name: "git_fetch",
@@ -538,22 +523,7 @@ export function GitFetchTool(ctx: ToolContext) {
       if (params.depth !== undefined) {
         fetchArgs.push(`--depth=${params.depth}`);
       }
-      try {
-        await $git("fetch", fetchArgs, { token: ctx.gitToken });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const isShallowUnreachable = SHALLOW_UNREACHABLE_PATTERNS.some((p) => p.test(msg));
-        const isShallow =
-          isShallowUnreachable &&
-          $("git", ["rev-parse", "--is-shallow-repository"], { log: false }).trim() === "true";
-        if (!isShallow) throw err;
-        log.info(
-          `» git_fetch hit shallow-unreachable error, retrying with --deepen=${DEEPEN_RETRY_DEPTH}`
-        );
-        await $git("fetch", [`--deepen=${DEEPEN_RETRY_DEPTH}`, "--no-tags", "origin", params.ref], {
-          token: ctx.gitToken,
-        });
-      }
+      await $gitFetchWithDeepen(fetchArgs, { token: ctx.gitToken }, "git_fetch");
       return { success: true, ref: params.ref };
     }),
   });

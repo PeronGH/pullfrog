@@ -14,6 +14,7 @@ import { readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { log } from "./cli.ts";
 import type { GitAuthServer } from "./gitAuthServer.ts";
 import { filterEnv } from "./secrets.ts";
+import { $ } from "./shell.ts";
 import { spawn } from "./subprocess.ts";
 
 type SafeGitSubcommand = "fetch" | "push";
@@ -179,5 +180,58 @@ export async function $git(
     } catch {
       // script may have self-deleted already
     }
+  }
+}
+
+/**
+ * shallow-clone unreachable: when an existing local depth is too shallow for
+ * git to traverse to the requested ref's ancestry, the remote walk fails with
+ * one of these wordings (git emits the full OID via oid_to_hex, so the bound
+ * is 40 for SHA-1 or 64 for SHA-256). detecting both lets a single deepen
+ * retry recover before the error reaches the agent — see issue #564 for the
+ * original `git_fetch` precedent and #656 for the `checkout_pr` follow-up.
+ */
+export const SHALLOW_UNREACHABLE_PATTERNS: RegExp[] = [
+  /Could not read [a-f0-9]{40,64}/,
+  /remote did not send all necessary objects/,
+];
+
+/**
+ * large enough to clear the merge base on most real-world PRs without
+ * downloading the full history; matches the fallback used by
+ * `checkoutPrBranch` when the GitHub compare API is unavailable.
+ */
+export const DEEPEN_RETRY_DEPTH = 1000;
+
+/**
+ * authenticated `git fetch` that recovers from shallow-unreachable errors
+ * by retrying once with `--deepen=1000`. callers pass the same args they
+ * would to `$git("fetch", ...)`; on shallow-unreachable failures in a
+ * shallow repo, the second attempt prepends `--deepen=N` and strips any
+ * caller-supplied `--depth=` (the two flags are mutually exclusive, and
+ * the caller's depth is what got us into this mess).
+ *
+ * non-shallow-unreachable errors and non-shallow repos rethrow unchanged,
+ * so this is safe to wrap any fetch without changing fast-path behavior.
+ */
+export async function $gitFetchWithDeepen(
+  args: string[],
+  options: GitAuthOptions,
+  label?: string
+): Promise<GitResult> {
+  try {
+    return await $git("fetch", args, options);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isShallowUnreachable = SHALLOW_UNREACHABLE_PATTERNS.some((p) => p.test(msg));
+    if (!isShallowUnreachable) throw err;
+    const isShallow =
+      $("git", ["rev-parse", "--is-shallow-repository"], { log: false }).trim() === "true";
+    if (!isShallow) throw err;
+    log.info(
+      `» ${label ?? "git fetch"} hit shallow-unreachable error, retrying with --deepen=${DEEPEN_RETRY_DEPTH}`
+    );
+    const retryArgs = args.filter((a) => !a.startsWith("--depth="));
+    return await $git("fetch", [`--deepen=${DEEPEN_RETRY_DEPTH}`, ...retryArgs], options);
   }
 }

@@ -5,7 +5,7 @@ import type { Octokit, RestEndpointMethodTypes } from "@octokit/rest";
 import { type } from "arktype";
 import { log } from "../utils/cli.ts";
 import { countLines, createDiffCoverageState } from "../utils/diffCoverage.ts";
-import { $git } from "../utils/gitAuth.ts";
+import { $git, $gitFetchWithDeepen } from "../utils/gitAuth.ts";
 import { executeLifecycleHook } from "../utils/lifecycle.ts";
 import { computeIncrementalDiff } from "../utils/rangeDiff.ts";
 import { retry } from "../utils/retry.ts";
@@ -259,10 +259,10 @@ async function ensureBeforeShaReachable(params: EnsureBeforeShaParams): Promise<
       sha: params.sha,
       ref: tempBranch,
     });
-    await $git(
-      "fetch",
+    await $gitFetchWithDeepen(
       ["--no-tags", ...(params.isShallow ? ["--depth=1"] : []), "origin", tempBranch],
-      { token: params.gitToken }
+      { token: params.gitToken },
+      `before_sha temp branch ${tempBranch}`
     );
     log.debug(`» fetched before_sha via temp branch ${tempBranch}`);
     return true;
@@ -410,9 +410,17 @@ export async function checkoutPrBranch(
   toolState.checkoutSha = $("git", ["rev-parse", "HEAD"], { log: false }).trim();
   const alreadyOnBranch = toolState.checkoutSha === pr.headSha;
 
-  // fetch base branch so origin/<base> exists for diff operations
+  // fetch base branch so origin/<base> exists for diff operations.
+  // wrap with deepen-retry: on shallow clones (the actions/checkout default
+  // is depth=1), repos with deep PR ancestry can't reach the baseRef tip in
+  // a single round trip, surfacing as `Could not read <sha>` / `remote did
+  // not send all necessary objects` (issue #656).
   log.debug(`» fetching base branch (${pr.baseRef})...`);
-  await $git("fetch", ["--no-tags", "origin", pr.baseRef], { token: gitToken });
+  await $gitFetchWithDeepen(
+    ["--no-tags", "origin", pr.baseRef],
+    { token: gitToken },
+    `base branch ${pr.baseRef}`
+  );
 
   // alreadyOnBranch only matches for repeated checkout_pr calls for the same PR in one session
   // (without the tip moving), or if an external setup already checked out the PR head.
@@ -426,14 +434,21 @@ export async function checkoutPrBranch(
     // -B creates or resets the branch to match origin/baseBranch
     $("git", ["checkout", "-B", pr.baseRef, `origin/${pr.baseRef}`], { log: false });
 
-    // fetch PR branch using pull/{n}/head refspec (works for both fork and same-repo PRs)
+    // fetch PR branch using pull/{n}/head refspec (works for both fork and same-repo PRs).
+    // two transient classes wrap this fetch:
+    //   - shallow-unreachable (`Could not read <sha>` etc.) — handled by the
+    //     inner `$gitFetchWithDeepen` deepen-retry (one shot, see issue #656)
+    //   - pull/N/head webhook race (`couldn't find remote ref pull/N/head`) —
+    //     handled by the outer retry below (see issue #591)
     log.debug(`» fetching PR #${pr.number} (${localBranch})...`);
     await retry(
       async () => {
         try {
-          await $git("fetch", ["--no-tags", "origin", `+pull/${pr.number}/head:${localBranch}`], {
-            token: gitToken,
-          });
+          await $gitFetchWithDeepen(
+            ["--no-tags", "origin", `+pull/${pr.number}/head:${localBranch}`],
+            { token: gitToken },
+            `PR #${pr.number}`
+          );
         } catch (e) {
           // on the webhook race, check whether the PR still matches what we
           // dispatched on. if it's been closed/merged or the head SHA moved,
