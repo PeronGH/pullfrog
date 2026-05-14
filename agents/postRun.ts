@@ -191,10 +191,16 @@ export async function collectPostRunIssues(
   options: { skipSummaryStale?: boolean } = {}
 ): Promise<PostRunIssues> {
   const issues: PostRunIssues = {};
-  if (ctx.stopScript) {
-    const failure = await executeStopHook(ctx.stopScript);
-    if (failure) issues.stopHook = failure;
-  }
+  // stop hook is disabled — production audit (May 2026) showed 8/9 configured
+  // scripts are foot-guns (duplicates of prepushScript, run on non-committing
+  // modes against unchanged trees) burning the retry budget on un-fixable
+  // gates. re-enable here + the dashboard block in `AgentSettings.tsx` once
+  // we've decided on the right semantics (mode-gating vs. HEAD-changed gating
+  // vs. deletion). see issue #714.
+  // if (ctx.stopScript) {
+  //   const failure = await executeStopHook(ctx.stopScript);
+  //   if (failure) issues.stopHook = failure;
+  // }
   // dirty-tree gate fires only in modes that legitimately commit. Review /
   // IncrementalReview / Plan complete via review submission or a Plan
   // comment, not by touching files — any tree dirt is incidental (e.g. a
