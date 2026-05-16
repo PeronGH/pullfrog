@@ -1,5 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { ToolContext } from "../mcp/server.ts";
+import { apiFetch } from "./apiFetch.ts";
+import { log } from "./cli.ts";
+import { patchWorkflowRunFields } from "./patchWorkflowRunFields.ts";
 
 /**
  * The PR-level summary snapshot is a markdown file the agent edits in place
@@ -75,4 +79,69 @@ export async function readSummaryFile(path: string): Promise<string | null> {
   if (trimmed.length < MIN_SNAPSHOT_LENGTH) return null;
   if (trimmed.length > MAX_SNAPSHOT_LENGTH) return trimmed.slice(0, MAX_SNAPSHOT_LENGTH);
   return trimmed;
+}
+
+/**
+ * Fetch the most recent persisted PR summary snapshot for this PR.
+ * Returns null on first-time PRs, when summary is disabled, or on any error.
+ * Best-effort: a transient API failure should not block the run.
+ */
+export async function fetchPreviousSnapshot(
+  ctx: ToolContext,
+  prNumber: number
+): Promise<string | null> {
+  if (!ctx.githubInstallationToken) return null;
+  try {
+    const response = await apiFetch({
+      path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/pr/${prNumber}/summary-comment`,
+      method: "GET",
+      headers: { authorization: `Bearer ${ctx.githubInstallationToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { snapshot?: string | null };
+    return typeof data.snapshot === "string" && data.snapshot.length > 0 ? data.snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the agent-edited PR summary tmpfile and persist to
+ * `WorkflowRun.summarySnapshot`.
+ *
+ * Best-effort: any failure is logged and does not affect the run's success
+ * status. Skips the PATCH when the file is byte-identical to its seed —
+ * persisting the seed verbatim would either re-write what the DB already has
+ * (on incremental runs) or serialize the placeholder scaffold (on first
+ * runs), neither of which is useful.
+ *
+ * Funnels through both the success path and the SIGINT/SIGTERM handler;
+ * `summaryPersistAttempted` guards against double-execution.
+ */
+export async function persistSummary(ctx: ToolContext): Promise<void> {
+  const filePath = ctx.toolState.summaryFilePath;
+  if (!filePath) return;
+  if (ctx.toolState.summaryPersistAttempted) return;
+  ctx.toolState.summaryPersistAttempted = true;
+  const snapshot = await readSummaryFile(filePath);
+  if (!snapshot) {
+    log.debug(`pr summary tmpfile missing or invalid at ${filePath} — skipping persist`);
+    return;
+  }
+  // soft gate: agent never touched the seeded file. saving the seed back
+  // is a no-op at best (incremental run — DB already has it) and a bug at
+  // worst (first run — serializes the placeholder italics). log a warning
+  // so the failure mode is visible in CI without flipping the run to
+  // failed.
+  const seed = ctx.toolState.summarySeed?.trim();
+  if (seed !== undefined && snapshot === seed) {
+    log.warning(
+      "» pr summary tmpfile unchanged from seed — skipping persist (agent did not edit it)"
+    );
+    return;
+  }
+  await patchWorkflowRunFields(ctx, { summarySnapshot: snapshot }).catch((err) => {
+    log.debug(`pr summary persist failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }

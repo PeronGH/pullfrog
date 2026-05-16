@@ -3,6 +3,7 @@ import * as core from "@actions/core";
 import { type } from "arktype";
 import type { AuthorPermission, PayloadEvent } from "../external.ts";
 import packageJson from "../package.json" with { type: "json" };
+import { log } from "./cli.ts";
 import type { RepoSettings } from "./runContext.ts";
 import { validateCompatibility } from "./versioning.ts";
 
@@ -175,3 +176,26 @@ export function resolvePayload(
 }
 
 export type ResolvedPayload = ReturnType<typeof resolvePayload>;
+
+/**
+ * Parse and validate the optional `output_schema` action input. Returns the
+ * parsed object when present, or `undefined` when absent. Throws on invalid
+ * JSON or non-object payloads — these are workflow-author errors that should
+ * surface immediately, not silently degrade to "no schema".
+ */
+export function resolveOutputSchema(): Record<string, unknown> | undefined {
+  const raw = core.getInput("output_schema");
+  if (!raw) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`invalid output_schema: not valid JSON`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`invalid output_schema: must be a JSON object`);
+  }
+  log.info("» structured output schema provided — output will be required");
+  return parsed as Record<string, unknown>;
+}

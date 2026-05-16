@@ -1,5 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { ToolContext } from "../mcp/server.ts";
+import { apiFetch } from "./apiFetch.ts";
+import { log } from "./cli.ts";
 
 /**
  * Repo-level learnings — operational facts about a repo (setup steps, test
@@ -87,4 +90,64 @@ export async function readLearningsFile(path: string): Promise<string | null> {
     return null;
   }
   return truncateAtLineBoundary(raw.trim(), MAX_LEARNINGS_LENGTH);
+}
+
+/**
+ * Read the agent-edited repo-level learnings tmpfile and PATCH it to
+ * `Repo.learnings`.
+ *
+ * Best-effort: any failure is logged and does not affect the run's success
+ * status. Skips the PATCH when the file is byte-trim-identical to its seed —
+ * the agent didn't touch it, so writing the same content back would just
+ * burn a `LearningsRevision` row and an API round-trip.
+ *
+ * `ctx.toolState.model` is forwarded so `LearningsRevision.model` keeps
+ * populating; it powers the per-revision attribution badge in the UI
+ * history view.
+ *
+ * `learningsPersistAttempted` guards against double-execution between the
+ * normal end-of-run path and the SIGINT/SIGTERM handler.
+ */
+export async function persistLearnings(ctx: ToolContext): Promise<void> {
+  const filePath = ctx.toolState.learningsFilePath;
+  if (!filePath) return;
+  if (ctx.toolState.learningsPersistAttempted) return;
+  ctx.toolState.learningsPersistAttempted = true;
+  const current = await readLearningsFile(filePath);
+  if (current === null) {
+    log.debug(`learnings tmpfile missing or unreadable at ${filePath} — skipping persist`);
+    return;
+  }
+  const seed = ctx.toolState.learningsSeed?.trim() ?? "";
+  if (current === seed) {
+    log.debug("learnings tmpfile unchanged from seed — skipping persist");
+    return;
+  }
+  try {
+    const response = await apiFetch({
+      path: `/api/repo/${ctx.repo.owner}/${ctx.repo.name}/learnings`,
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${ctx.apiToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        learnings: current,
+        model: ctx.toolState.model,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      const error = await response.text().catch(() => "(no body)");
+      // promoted from debug → warning: this path means the agent edited the
+      // file (we already short-circuited the unchanged-from-seed case above)
+      // but the PATCH dropped it on the floor. silently losing real work is
+      // worse than the noise of a CI warning.
+      log.warning(`learnings persist failed (${response.status}): ${error}`);
+      return;
+    }
+    log.info("» learnings updated");
+  } catch (err) {
+    log.warning(`learnings persist failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
