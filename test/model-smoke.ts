@@ -28,7 +28,12 @@ config({ path: join(import.meta.dirname, "..", "..", ".env") });
 
 const PROMPT = "Reply with exactly OK and nothing else.";
 const MATCH = /\bOK\b/i;
-const TIMEOUT_MS = 60_000;
+// xai is the slowest provider in the matrix — winning xai/grok-4.3 jobs land
+// at 42-67s wall time (vs 23-41s for every other provider), brushing a 60s
+// ceiling and intermittently crossing it. 120s gives ~2x headroom on the
+// slowest provider observed in CI, with no downside on the fast-path
+// providers since the timer only fires on actual hangs.
+const TIMEOUT_MS = 120_000;
 
 function parseSlug(): string {
   const argIdx = process.argv.indexOf("--slug");
