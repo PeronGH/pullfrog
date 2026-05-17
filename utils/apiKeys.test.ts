@@ -15,6 +15,7 @@ const savedEnv = { ...process.env };
 const STRIPPED_PREFIXES_OR_NAMES = [
   /_API_KEY$/,
   /^CLAUDE_CODE_OAUTH_TOKEN$/,
+  /^CODEX_AUTH_JSON$/,
   /^AWS_BEARER_TOKEN_BEDROCK$/,
   /^AWS_ACCESS_KEY_ID$/,
   /^AWS_SECRET_ACCESS_KEY$/,
