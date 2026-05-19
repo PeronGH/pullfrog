@@ -10,50 +10,60 @@ export interface Mode {
   prompt?: string | undefined;
 }
 
-// Default user-facing summary format embedded in Review mode review bodies.
-// Deliberately scoped to Review (initial PR review). IncrementalReview keeps
-// its own terser bullet-list "Reviewed changes" shape since re-review bodies
-// are deltas, not introductions. Distinct from the agent-internal snapshot
-// (action/utils/prSummary.ts) which has its own stable scaffold and is never
-// shaped by user instructions — see selectMode.ts for the firewall.
+// Default user-facing summary format embedded in BOTH Review and
+// IncrementalReview review bodies. The two modes share the preamble +
+// cross-cutting + nitpicks shape; the only difference is scope (full PR for
+// Review vs delta against the prior pullfrog review for IncrementalReview).
+// Distinct from the agent-internal snapshot (action/utils/prSummary.ts) which
+// has its own stable scaffold and is never shaped by user instructions — see
+// selectMode.ts for the firewall.
 export const PR_SUMMARY_FORMAT = `### Default format
 
 The body has at most three parts in this exact order:
 
-1. **Reviewed changes preamble** — one bolded inline lead-in describing what the PR does, then a bullet list of the substantive changes, then a collapsed \`<details>Review metadata</details>\` block.
+1. **Reviewed changes preamble** — one bolded inline lead-in describing what was reviewed in this run, a bullet list of the substantive changes, an italic TL;DR commit-range line, and an HTML comment carrying review metadata for downstream agents.
 2. **Cross-cutting issue sections** (zero or more) — one \`### \` heading per concern, with a human-readable problem write-up and a collapsed \`<details>Technical details</details>\` block underneath.
 3. **\`### ℹ️ Nitpicks\`** at the very bottom (only if there are nits worth surfacing in the body) — a flat bullet list, no technical-details block.
 
-Inline-vs-body discipline is the most important rule: any concern that anchors to a single line in the diff goes in an INLINE comment via the \`comments\` parameter, never the body. The body is reserved for **cross-cutting** concerns — design-level issues that span files, meta-patterns across endpoints, or symptoms whose root cause isn't on any one line. If everything you found can be inlined, the body has zero \`### \` issue sections — just the preamble + metadata.
+Inline-vs-body split: concerns that anchor to a specific line go inline (use the \`comments\` parameter). Body \`### \` sections are reserved for concerns that **have no line to anchor to** — typically because the concern is about *absence* (something the diff should have done but didn't), *sequencing* (rollout / deletion / migration order), *design decisions only the human can make*, or *scope questions the diff implicitly raises but doesn't address*. A concern that anchors to a line but has broad implications still goes inline (use the technical-details block there to capture the implications — see Inline technical details below). If you found no non-anchorable concerns, the body has zero \`### \` issue sections — just the preamble + metadata.
 
 ## 1. Reviewed changes preamble
 
 Open with a single bolded inline lead-in followed immediately by the bullet list (no \`### Key changes\` heading, no \`<b>TL;DR</b>\`):
 
 \`\`\`
-**Reviewed changes** — one sentence on what the PR does and why. Focus on intent, not mechanics.
+**Reviewed changes** — one sentence on what was reviewed in this run. For Review (initial), this is what the PR does and why. For IncrementalReview, this is what changed since the prior pullfrog review. Focus on intent, not mechanics.
 
-- **Short human-readable title** — 1 sentence per substantive change. Write a short prose phrase; when you name a file, type, or function, put that name in backticks (e.g. **Add \\\`TodoTracker\\\` for live checklists**). A reviewer should understand the full PR from this list alone — this IS the dispassionate "what was reviewed and what changed" overview, so cover the substantive changes, not just the loudest ones.
+- **Short human-readable title** — 1 sentence per substantive change. Write a short prose phrase; when you name a file, type, or function, put that name in backticks (e.g. **Add \\\`TodoTracker\\\` for live checklists**). A reviewer should understand the full reviewed scope from this list alone — this IS the dispassionate "what was reviewed and what changed" overview, so cover the substantive changes, not just the loudest ones.
 
-<details><summary>Review metadata</summary>
+_Reviewed {start_sha_short}…{head_sha_short} ({commit_count} commit{s})._
 
-- **Mode:** Review (initial)   *or*   IncrementalReview (delta against prior pullfrog review)
-- **Files reviewed:** {file_count}
-- **Commits reviewed:** {commit_count}
-- **Base:** \\\`{base_ref}\\\` (\\\`{base_sha_short}\\\`)
-- **Head:** \\\`{head_ref}\\\` (\\\`{head_sha_short}\\\`)
-- **Reviewed commits:**
-  - \\\`{sha_short}\\\` — {commit_subject}
+<!--
+Pullfrog review metadata — for any agent (or human-with-agent) reading this
+review. Incorporate the fields below into your understanding of the context
+this review was made in. The findings below were written against
+{head_sha_short}; if new commits have landed on {head_ref} since this review
+was submitted, treat any specific bug, file, or line callout as POTENTIALLY
+STALE — re-diff against {head_sha_short} (or trigger a fresh review) and
+factor commits past {head_sha_short} into your understanding of the current
+state before acting on findings.
+
+- Mode: Review (initial)   or   IncrementalReview (delta against prior pullfrog review)
+- Files reviewed: {file_count}
+- Commits reviewed: {commit_count}
+- Base: {base_ref} ({base_sha_short})
+- Head: {head_ref} ({head_sha_short})
+- Reviewed commits:
+  - {sha_short} — {commit_subject}
   - ...
-- **Prior pullfrog review:** none   *or*   \\\`{prior_sha_short}\\\` (linked to the prior review URL when available)
-- **Submitted at:** {iso_timestamp}
-
-If \\\`HEAD\\\` of \\\`{head_ref}\\\` has advanced past \\\`{head_sha_short}\\\`, this review may be partially or fully stale — re-diff against \\\`{head_sha_short}\\\` before treating any technical-details block as current.
-
-</details>
+- Prior pullfrog review: none   or   {prior_sha_short} ({prior_review_html_url})
+- Submitted at: {iso_timestamp}
+-->
 \`\`\`
 
-Pull every metadata field from the \`checkout_pr\` tool's response — file count, commit count, base/head ref + SHA, the commit list. For \`IncrementalReview\` runs, populate \`Prior pullfrog review\` with the prior review's commit_id (short SHA) and link to its URL via \`list_pull_request_reviews\`.
+The TL;DR line uses **bare 7-character SHAs** (no backticks, no surrounding link) — GitHub auto-links bare commit SHAs to the commit page; backticking them suppresses the auto-link. \`{start_sha_short}\` is the PR base SHA for Review and the prior pullfrog review's commit_id for IncrementalReview; \`…\` is a single ellipsis (U+2026), not three dots, which keeps both SHAs as separate lex tokens for the auto-linker. Use "commit" / "commits" appropriately for \`{commit_count}\`.
+
+Pull every metadata field from the \`checkout_pr\` tool's response — file count, commit count, base/head ref + SHA, the commit list. For \`IncrementalReview\` runs, populate \`Prior pullfrog review\` with the prior review's commit_id (short SHA) and \`html_url\` from \`list_pull_request_reviews\`.
 
 ## 2. Cross-cutting issue sections (zero or more)
 
@@ -87,6 +97,16 @@ For each cross-cutting concern, one \`### \` section. Use this exact shape:
 </details>
 \`\`\`
 
+Concrete example of the visible part of a non-anchored section (technical-details block unchanged from the template above):
+
+\`\`\`
+### ℹ️ Legacy \`opencode.ts\` has no documented deletion plan
+
+The v2 harness lands alongside the v1 file and imports one helper from it. Worth a follow-up issue or a TODO so the next maintainer doesn't have to re-derive the cleanup plan.
+\`\`\`
+
+The example's value is its *shape*: a finding about absence (no deletion plan), not a line-anchored bug. Body sections live or die on whether the concern genuinely doesn't fit on a line.
+
 **Heading severity emoji** — every \`### \` heading carries one:
 
 - 🚨 critical — blocks merge (data loss, security, broken core flow)
@@ -107,6 +127,12 @@ For each cross-cutting concern, one \`### \` section. Use this exact shape:
 - Slightly more verbose than the absolute minimum is OK when it materially helps the next agent: a small code snippet showing the symptom, a short table of mismatched key/column pairs, a one-paragraph "why CI doesn't catch it" note. Skip massive regression-test scaffolding or full route rewrites — the implementing agent writes those.
 - Use the four standard sections (\`Affected sites\`, \`Required outcome\`, optional \`Suggested approach\`, optional \`Open questions for the human\`). Skip the optional sections when they wouldn't add anything.
 
+## Inline technical details
+
+Inline comments are short (~2-3 sentences) by default. When an inline finding has broader implications worth recording for a fix-agent — e.g. a localized bug whose proper fix requires touching several files, or where the right fix depends on a design decision the human needs to make — append a collapsed \`<details><summary>Technical details</summary>\` block to the inline comment's body. Same shape as the body-section technical-details block (4-backtick fenced markdown, \`## Affected sites\` / \`## Required outcome\` / optional \`## Suggested approach\` / optional \`## Open questions for the human\`).
+
+GitHub renders the same markdown parser in inline comments as in the review body, so the collapsed-details affordance works the same way. The visible part of the inline comment stays scannable; the depth is one click away for any agent that needs it.
+
 ## 3. \`### ℹ️ Nitpicks\` (optional, last section)
 
 Only when there are nits that for some reason can't be inlined. Filepaths in nit text are fine — these are simple enough that a human or agent reads once and acts. No technical-details block.
@@ -118,9 +144,17 @@ Only when there are nits that for some reason can't be inlined. Filepaths in nit
 - ...
 \`\`\`
 
+## Inline comment shape
+
+Inline comments use the same severity framing as body \`### \` sections, scaled down for line-anchored use:
+
+- **Lead with a 1-2 sentence problem statement.** The reader is looking at the line in question, so don't restate what the line says — describe what's wrong with it. Optionally prefix the visible line with a severity emoji (🚨 / ⚠️ / ℹ️) when severity isn't obvious from context.
+- **Optional \`<details><summary>Technical details</summary>...</details>\` collapsible** for findings whose technical context (longer file:line references, related-code snippets, suggested approach, regression-risk notes) would overwhelm the human-readable lead-in. Same agent-readable purpose, same 4-backtick fence shape, and same 4-section structure as the body's technical-details block — see *Inline technical details* above. Encouraged whenever the depth helps a downstream fix-agent; don't force one when the inline lead-in already says everything.
+- **Visible portion ≤ 2-3 sentences.** If you find yourself writing more, that's the cue to split the depth into the \`Technical details\` collapsible.
+
 ## Body-wide rules
 
-- **Inline-vs-body discipline (repeated for emphasis):** anything that anchors to a single line goes inline, not in the body. The body is for cross-cutting concerns only.
+- **Inline-vs-body discipline (repeated for emphasis):** anything that anchors to a specific line goes inline (with a \`<details>Technical details</details>\` block when the implications are broad). The body is for non-anchorable concerns only — absence, sequencing, design decisions, scope questions, architectural risk.
 - **No \`### Issues found\` heading** above the issue sections — each \`### \` heading IS the issue.
 - **Severity emoji on every \`### \` heading** (🚨 / ⚠️ / ℹ️). No emoji on the preamble lead-in or anywhere else.
 - **GitHub block-level rendering**: GitHub's markdown parser requires a blank line between ALL block-level elements (HTML tags like \`<br/>\`, \`<sub>\`, \`<details>\`, \`<b>\` and markdown syntax like headings, lists, blockquotes, code fences, paragraphs). Without a blank line, GitHub treats following content as a continuation of the HTML block and renders markdown syntax as literal text. ALWAYS separate block-level elements with a blank line.
@@ -327,7 +361,9 @@ For simple, well-defined tasks, skip the plan phase and go straight to build.`,
 
 6. **aggregate & draft**: when the fan-out lands, merge findings; de-dup overlaps (two lenses catching the same issue = higher-confidence signal); trace each finding yourself before accepting it. drop praise, style preferences, speculative/unverified claims, findings about pre-existing code unrelated to the PR (heuristic: if the finding's root cause lives in lines this PR added or modified, it's in scope; otherwise drop unless the PR plausibly introduced or amplified the regression), and anything not actionable. also drop **bloat-shaped findings** — proposed fixes that would add defensive checks for cases that can't happen, abstractions used once, comments restating obvious code, tests asserting tautologies, or "just-in-case" guards. subagents are fallible and bias toward recommending changes; the bar for an actionable inline comment is sound + correct + elegant. recommending a change that improves only one of the three (or worse, degrades elegance to nominally improve correctness) makes the codebase worse, not better.
 
-   for surviving findings, draft inline comments with NEW line numbers from the diff. every comment must be actionable, 2-3 sentences max. use GitHub permalink format for code references. for impact-analysis findings (stale references after rename/remove), report them in the review body ordered by severity (runtime breakage > incorrect docs > stale comments) rather than as inline comments unless they're anchored to a specific line.
+   **Hunt for non-anchored concerns before drafting.** After collecting your anchored findings, deliberately scan for concerns that have no specific line to point at — typically: deletion / cleanup plans for code the diff replaces or shadows; rollout sequencing (what happens to in-flight state during deploy / revert?); coverage gaps the diff implies but doesn't add; scope questions that only the human can answer (e.g. is the legacy path going away or is this a long-term dual track?); architectural risks the diff opens up that aren't a single-line bug. On substantial PRs (migrations, refactors, multi-file rewrites, version bumps that change runtime semantics), at least one such concern almost always exists; if you can't think of any, your bar is probably too high.
+
+   for surviving findings, draft inline comments with NEW line numbers from the diff — attach a \`<details>Technical details</details>\` block to any inline comment whose fix is non-trivial or has cross-file implications (see Inline technical details in the format below). every comment must be actionable, 2-3 sentences max in the visible part. use GitHub permalink format for code references. for impact-analysis findings (stale references after rename/remove), report them in the review body ordered by severity (runtime breakage > incorrect docs > stale comments) rather than as inline comments unless they're anchored to a specific line.
 
 7. **submit**: ALWAYS submit exactly one review via \`${t("create_pull_request_review")}\`. Do NOT call \`report_progress\` — the review is the final record and the progress comment will be cleaned up automatically.
 
@@ -357,17 +393,17 @@ For simple, well-defined tasks, skip the plan phase and go straight to build.`,
 
 ${PR_SUMMARY_FORMAT}`,
     },
-    // IncrementalReview shares Review's 0-or-2+ lens pattern but scopes the
-    // target to the incremental diff. The "issues must be NEW since the last
-    // Pullfrog review" filter lives at aggregation time (step 8), NOT in the
-    // subagent prompt — pushing the filter into
-    // subagents matches the canonical anneal anti-pattern of "list known
-    // pre-existing failures — don't flag these" and suppresses signal on
-    // regressions the new commits amplified. The review body is just
-    // "Reviewed changes" — a separate "Prior review feedback" checklist
-    // would duplicate the rolling PR summary snapshot's record of what
-    // earlier runs already addressed and add noise to the user-facing
-    // body. Same opening-callout + per-bullet emoji severity split as Review.
+    // IncrementalReview shares Review's 0-or-2+ lens pattern AND its body
+    // format (PR_SUMMARY_FORMAT), scoped to the incremental delta against the
+    // prior pullfrog review. The "issues must be NEW since the last Pullfrog
+    // review" filter lives at aggregation time (step 8), NOT in the subagent
+    // prompt — pushing the filter into subagents matches the canonical anneal
+    // anti-pattern of "list known pre-existing failures — don't flag these"
+    // and suppresses signal on regressions the new commits amplified. A
+    // separate "Prior review feedback" checklist would duplicate the rolling
+    // PR summary snapshot's record of what earlier runs already addressed and
+    // add noise to the user-facing body. Same opening-callout + per-bullet
+    // emoji severity split as Review.
     {
       name: "IncrementalReview",
       description:
@@ -426,9 +462,13 @@ ${PR_SUMMARY_FORMAT}`,
    - do NOT pre-shape their output with a finding schema
    - do NOT mention the other lenses (independence is the point)
 
-8. **aggregate, draft, self-critique**: merge findings (yours + any subagent output if you went multi-lens); de-dup overlaps; trace each finding yourself. drop praise, style preferences, speculative/unverified claims, findings about pre-existing code unrelated to the new commits, anything not actionable, and anything that re-states prior review feedback (heuristic: if the finding's root cause lives in lines the *new commits* added or modified, it's in scope; otherwise drop). also drop **bloat-shaped findings** — proposed fixes that would add defensive checks for cases that can't happen, abstractions used once, comments restating obvious code, tests asserting tautologies, or "just-in-case" guards. subagents are fallible and bias toward recommending changes; the bar for an actionable inline comment is sound + correct + elegant. recommending a change that improves only one of the three (or degrades elegance to nominally improve correctness) makes the codebase worse, not better. To compute "lines the new commits added or modified": if \`incrementalDiffPath\` from step 2 is present, use it directly. Otherwise, take the prior Pullfrog review's \`commit_id\` (returned alongside each entry from \`${t("list_pull_request_reviews")}\` in step 4) and run \`git diff <prior-review-sha>..HEAD\` to isolate the lines added since that review. draft inline comments with NEW line numbers from the full PR diff — every comment must be actionable, 2-3 sentences max.
+8. **aggregate, draft, self-critique**: merge findings (yours + any subagent output if you went multi-lens); de-dup overlaps; trace each finding yourself. drop praise, style preferences, speculative/unverified claims, findings about pre-existing code unrelated to the new commits, anything not actionable, and anything that re-states prior review feedback (heuristic: if the finding's root cause lives in lines the *new commits* added or modified, it's in scope; otherwise drop). also drop **bloat-shaped findings** — proposed fixes that would add defensive checks for cases that can't happen, abstractions used once, comments restating obvious code, tests asserting tautologies, or "just-in-case" guards. subagents are fallible and bias toward recommending changes; the bar for an actionable inline comment is sound + correct + elegant. recommending a change that improves only one of the three (or degrades elegance to nominally improve correctness) makes the codebase worse, not better. To compute "lines the new commits added or modified": if \`incrementalDiffPath\` from step 2 is present, use it directly. Otherwise, take the prior Pullfrog review's \`commit_id\` (returned alongside each entry from \`${t("list_pull_request_reviews")}\` in step 4) and run \`git diff <prior-review-sha>..HEAD\` to isolate the lines added since that review.
 
-9. **build the review body** — a single "Reviewed changes" section: summarize at the logical-change level, not per-file. each bullet starts with a past-tense verb (e.g. \`- Extracted shared CLI runtime into a single module\`, \`- Renamed package to pullfrog\`). avoid file paths unless they add clarity. if the changes can be described in one sentence, use one sentence — no bullets needed. do NOT include a separate "Prior review feedback" checklist; that's tracked in the rolling PR summary snapshot for the next agent run, and surfacing it in the user-facing body is noise (changes that addressed prior feedback are already covered by the Reviewed-changes bullets). in some cases you may receive a complete diff for the whole pull request instead of an incremental one — when this happens, you will need to determine what changes have happened since Pullfrog's most recent review.
+   **Hunt for non-anchored concerns before drafting.** After collecting your anchored findings, deliberately scan for concerns that have no specific line to point at — typically: deletion / cleanup plans for code the new commits replace or shadow; rollout sequencing (what happens to in-flight state during deploy / revert?); coverage gaps the new commits imply but don't add; scope questions that only the human can answer (e.g. is the legacy path going away or is this a long-term dual track?); architectural risks the new commits open up that aren't a single-line bug. On substantial incremental diffs (migrations, refactors, multi-file rewrites, version bumps that change runtime semantics), at least one such concern almost always exists; if you can't think of any, your bar is probably too high.
+
+   draft inline comments with NEW line numbers from the full PR diff — attach a \`<details>Technical details</details>\` block to any inline comment whose fix is non-trivial or has cross-file implications (see Inline technical details in the format below). every comment must be actionable, 2-3 sentences max in the visible part.
+
+9. **build the review body**: use the same default format as Review mode (preamble + optional cross-cutting \`### \` sections + optional \`### ℹ️ Nitpicks\`) — scoped to the **incremental delta**, not the full PR. The "Reviewed changes" bullets describe what changed since the prior pullfrog review (each bullet starts with a past-tense verb, e.g. \`- Extracted shared CLI runtime into a single module\`); the TL;DR commit-range line uses the prior review's commit_id as \`{start_sha_short}\` so GitHub renders both the prior-review SHA and the current head SHA as auto-links. Do NOT include a separate "Prior review feedback" checklist — that's tracked in the rolling PR summary snapshot for the next agent run, and surfacing it in the user-facing body is noise (changes that addressed prior feedback are already covered by the Reviewed-changes bullets). In some cases you may receive a complete diff for the whole PR instead of an incremental one; when this happens, determine what changed since Pullfrog's most recent review yourself before drafting bullets.
 
 10. Submit — every run must end with EXACTLY ONE of \`${t("create_pull_request_review")}\` (substantive review) or \`${t("report_progress")}\` (no-review acknowledgement). do NOT call \`create_issue_comment\` for review output.
 
@@ -437,11 +477,13 @@ ${PR_SUMMARY_FORMAT}`,
    Follow these rules:
    - note: the first create_pull_request_review submission may error with a one-time diff-coverage nudge listing unread TOC regions. retry the same call to proceed — optionally after reading the listed ranges. the pre-flight will not block again this session.
    - IF NO NEW ISSUES, NON-SUBSTANTIVE CHANGES ONLY (trivial formatting, import reordering, comment tweaks): do NOT submit a review. Instead call \`${t("report_progress")}\` with a 1-2 sentence note explaining no review was warranted (e.g. "No new issues. Changes since last review are formatting-only."). this leaves a visible signal that the run completed.
-   - ELSE IF NEW CRITICAL ISSUES (blocks merge — bugs, security, data loss, broken core flows): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!CAUTION]\\n> This PR introduces ...\`, then the Reviewed-changes summary.
-   - ELSE IF NEW MUST-ADDRESS NON-CRITICAL FINDINGS (real consequences if shipped — incorrect behavior, missing validation, regressions the author should fix before merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!IMPORTANT]\\n> ...\`, then the Reviewed-changes summary. Do NOT use this tier for nits, style preferences, or "consider also" suggestions.
-   - ELSE IF NEW MINOR SUGGESTIONS ONLY (single-line nits, doc/comment polish, defer-able observations, "rough edges"): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> ℹ️ No critical issues — minor suggestions inline.\\n\\n\` (vary the wording after ℹ️ to fit the review), then the Reviewed-changes summary.
-   - ELSE IF INFORMATIONAL OBSERVATIONS (mergeable as-is, but worth surfacing — e.g. prior feedback addressed cleanly with one minor stale doc reference, or a noteworthy positive observation): call \`${t("create_pull_request_review")}\` with \`approved: true\`, NO inline comments, and the review body. body opens with \`> ✅ No new issues found.\\n\\n\` (or similar friendly green opener), then the Reviewed-changes summary. If a point is concrete enough to anchor to a line, downgrade the whole review to "minor suggestions only" (\`approved: false\`) instead — the ✅ signals "no action needed", which contradicts an actionable anchor.
-   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, set \`approved: true\`. body opens with \`> ✅ No new issues found.\\n\\nReviewed the following changes:\\n\`, then the Reviewed-changes summary.`,
+   - ELSE IF NEW CRITICAL ISSUES (blocks merge — bugs, security, data loss, broken core flows): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!CAUTION]\\n> This PR introduces ...\`, followed by the PR summary using the default format below.
+   - ELSE IF NEW MUST-ADDRESS NON-CRITICAL FINDINGS (real consequences if shipped — incorrect behavior, missing validation, regressions the author should fix before merge): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> [!IMPORTANT]\\n> ...\`, followed by the PR summary using the default format below. Do NOT use this tier for nits, style preferences, or "consider also" suggestions.
+   - ELSE IF NEW MINOR SUGGESTIONS ONLY (single-line nits, doc/comment polish, defer-able observations, "rough edges"): call \`${t("create_pull_request_review")}\` with \`approved: false\`, all comments, and the review body. body opens with \`> ℹ️ No critical issues — minor suggestions inline.\\n\\n\` (vary the wording after ℹ️ to fit the review), followed by the PR summary using the default format below.
+   - ELSE IF INFORMATIONAL OBSERVATIONS (mergeable as-is, but worth surfacing — e.g. prior feedback addressed cleanly with one minor stale doc reference, or a noteworthy positive observation): call \`${t("create_pull_request_review")}\` with \`approved: true\`, NO inline comments, and the review body. body opens with \`> ✅ No new issues found.\\n\\n\` (or similar friendly green opener), followed by the PR summary using the default format below. If a point is concrete enough to anchor to a line, downgrade the whole review to "minor suggestions only" (\`approved: false\`) instead — the ✅ signals "no action needed", which contradicts an actionable anchor.
+   - ELSE IF NO NEW ISSUES, SUBSTANTIVE CHANGES (new functionality, behavior changes, or fixes to prior review feedback): call \`${t("create_pull_request_review")}\` to create a PR review. If all previous reviews have been properly addressed and no new issues were discovered, set \`approved: true\`. body opens with \`> ✅ No new issues found.\\n\\n\`, followed by the PR summary using the default format below.
+
+${PR_SUMMARY_FORMAT}`,
     },
     {
       name: "Plan",
