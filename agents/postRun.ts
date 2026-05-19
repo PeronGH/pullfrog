@@ -279,11 +279,18 @@ export function shouldRunReflection(mode: string | undefined): boolean {
  * agent has been writing (issue #619 in pullfrog/app). recurring failure
  * modes the framing pushes back on:
  *  - massive multi-paragraph "bullets" that are really mini-articles
- *  - PR-/review-/commit-/date-anchored facts that decay within weeks
- *  - rediscovery of pullfrog-tool quirks that belong in tool descriptions,
- *    not per-repo learnings
+ *  - facts anchored to moving repo state (PR / review / commit / branch
+ *    refs, dates, version pins, line numbers) that decay within weeks
  *  - sections growing into giant flat lists with no internal structure,
  *    forcing future runs to read kilobytes to find one fact
+ *
+ * single litmus delivered in the prompt: "would a future run on this repo
+ * do its work better because this bullet exists?". tool-quirk workarounds
+ * are explicitly allowed when the agent burned calls discovering the
+ * quirk this run — recording the workaround prevents next run from
+ * repeating the waste. tradeoff: the same quirk gets duplicated across
+ * repos, so when a quirk is fixed upstream in tool descriptions the
+ * per-repo bullets go stale and we have no batch-invalidation path.
  */
 export function buildLearningsReflectionPrompt(filePath: string): string {
   return [
@@ -296,18 +303,16 @@ export function buildLearningsReflectionPrompt(filePath: string): string {
     `- **no section over ~300 lines.** when a section is approaching that, split it: introduce \`### \` subsections grouping related bullets, or hoist a coherent group into a new top-level \`## \` section. granular sections mean future runs read targeted line ranges instead of slurping the whole file. this is the most important hygiene rule on long-lived repos.`,
     `- if you find a flat unstructured list (legacy content from before this format), restructure it: read it, group related bullets, rewrite the file with \`## \` / \`### \` headings around them. don't preserve bad structure — fix it.`,
     "",
-    `bullet hygiene:`,
-    `- one fact per line starting with \`- \`. each bullet is ONE specific durable fact, not a paragraph or essay.`,
-    `- aim for ≤ 240 chars per bullet. longer bullets are almost always mixing multiple facts that should be split, or burying the durable claim under PR-specific context that should be cut.`,
-    `- only add bullets when the finding is high-confidence AND broadly useful AND will still be true in 3+ months. skip speculative, one-off, or "maybe" findings.`,
-    `- prune bullets that are clearly wrong, no longer relevant, or low-signal. a focused, accurate file beats a long stale one. compressing two overlapping bullets into one tighter bullet counts as progress.`,
-    `- deduplicate against existing entries (in any section) — if a bullet covers the same fact, update it in place instead of adding a duplicate.`,
+    `the only test: would a future run on this repo do its work better because this bullet exists? useful for future runs in this repo — prevent wasted tool calls, rabbit holes, and mistakes.`,
     "",
-    `do NOT add bullets for:`,
-    `- pullfrog tool quirks (e.g. "\`shell\` timeout is in milliseconds", "\`git\` args must be a JSON array", "\`create_pull_request_review\` drops out-of-hunk comments", "\`push_branch\` may report timeout when push succeeded"). these are universal across repos and belong in the tool descriptions — flag the gap rather than hoarding the workaround per-repo.`,
-    `- references to specific PR numbers, review IDs, commit SHAs, branch names, or person handles ("PR #595 introduced X", "flagged in review 12345", "as of commit abc123"). repo state changes; these decay into noise within weeks.`,
-    `- dated assertions ("as of May 2026", "currently...", "for now..."). if a fact needs a date to be true, it isn't durable enough to belong here.`,
-    `- play-by-play of what THIS run did. learnings are for the NEXT run, not a retrospective.`,
+    `bullet hygiene:`,
+    `- one fact per line starting with \`- \`, ≤ 240 chars.`,
+    `- only add when high-confidence, broadly useful, evergreen.`,
+    `- prune wrong or low-signal bullets; merge overlaps; dedupe across sections.`,
+    "",
+    `don't anchor facts to repo state that will move: PR / review / commit / branch refs, dates, version pins, line numbers. state the rule directly. if it needs the anchor to be load-bearing, it isn't evergreen.`,
+    "",
+    `tool-quirk bullets are fine when you burned calls discovering the quirk and a future run would repeat them. write the workaround, not the war story.`,
     "",
     `if you have nothing substantively new to add AND the existing entries still look healthy and well-structured, leave the file alone — just reply "done" and stop. silence is a valid outcome.`,
   ].join("\n");

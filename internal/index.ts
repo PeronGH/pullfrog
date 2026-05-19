@@ -45,6 +45,7 @@ export {
   isLeapingIntoActionCommentBody,
   LEAPING_INTO_ACTION_PREFIX,
 } from "../utils/leapingComment.ts";
+export { MAX_LEARNINGS_LENGTH, truncateAtLineBoundary } from "../utils/learningsTruncate.ts";
 export type {
   CreateProgressCommentTarget,
   ProgressComment,

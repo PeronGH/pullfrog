@@ -397,11 +397,13 @@ export function buildLearningsSection(ctx: {
   headings: LearningsHeading[];
 }): string {
   if (!ctx.filePath) return "";
-  const intro = `Repo-level learnings accumulated by previous agent runs live at \`${ctx.filePath}\`. Use this file as durable context (test commands, conventions, gotchas, architecture notes).`;
+  // intro is neutral about whether content exists so an empty fresh-repo
+  // file doesn't open with "accumulated by previous agent runs" (false).
+  const intro = `The repo-level learnings file at \`${ctx.filePath}\` holds durable context (test commands, conventions, gotchas, architecture notes) maintained across runs.`;
   const tocBody =
     ctx.headings.length === 0
-      ? "(no headings yet — file is empty or a flat list. read the whole file. during the post-run reflection turn, structure it with `## ` / `### ` headings so future runs can read targeted ranges.)"
-      : `Read targeted line ranges via your native file tool — do NOT slurp the whole file. Each range starts at the section heading line, so reading the range gives you heading + body together.\n\n${renderLearningsToc(ctx.headings)}`;
+      ? "(no headings yet — the file is empty or contains a flat list. read the whole file if it has content. during the post-run reflection turn, structure it with `## ` / `### ` headings so future runs can read targeted ranges.)"
+      : `Read targeted line ranges via your native file tool — do NOT slurp the whole file. Each range starts at the section heading line, so reading the range gives you heading + body together. The ranges below are a run-start snapshot: any edit shifts the line numbers of every later section, so re-read the TOC range you need before relying on it.\n\n${renderLearningsToc(ctx.headings)}`;
   return `************* LEARNINGS *************\n\n${intro}\n\n${tocBody}`;
 }
 

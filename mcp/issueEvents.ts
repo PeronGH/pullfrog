@@ -27,10 +27,11 @@ export function GetIssueEventsTool(ctx: ToolContext) {
       const relevantEventTypes = new Set(["cross_referenced", "referenced"]);
 
       const parsedEvents = events.flatMap((event) => {
-        // Filter to only events with an 'event' property and relevant types
-        if (!("event" in event) || !relevantEventTypes.has(event.event)) {
-          return [];
-        }
+        // octokit's timeline-event union includes members with `event?:
+        // string`, so `"event" in event` does not narrow it to defined.
+        // require a string before the Set.has() check.
+        if (!("event" in event) || typeof event.event !== "string") return [];
+        if (!relevantEventTypes.has(event.event)) return [];
 
         const baseEvent: Record<string, any> = {
           event: event.event,

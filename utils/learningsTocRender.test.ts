@@ -82,6 +82,17 @@ describe("buildLearningsSection", () => {
     expect(out).not.toMatch(/\(L\d+-L\d+\)/);
   });
 
+  it("intro phrasing does not assert prior runs — works for fresh empty repos too", () => {
+    const out = buildLearningsSection({
+      filePath: "/tmp/run-1/pullfrog-learnings.md",
+      headings: [],
+    });
+    // load-bearing: fresh repos have zero previous runs. the prior copy
+    // ("accumulated by previous agent runs") was a lie in that case.
+    expect(out).not.toContain("accumulated by previous agent runs");
+    expect(out).toContain("maintained across runs");
+  });
+
   it("renders the TOC inline with the file path and heading guidance", () => {
     const out = buildLearningsSection({
       filePath: "/tmp/run-1/pullfrog-learnings.md",
@@ -92,6 +103,12 @@ describe("buildLearningsSection", () => {
     expect(out).toContain("- Build & test (L1-L18)");
     expect(out).toContain("- Architecture (L19-L60)");
     expect(out).toContain("Each range starts at the section heading line");
+    // re-read affordance: ranges reflect the run-start snapshot, so the
+    // agent needs an explicit nudge to re-read after any mid-run edits.
+    // mid-run edits shift the line numbers of every later section, not
+    // just the edited one — wording is explicit about that.
+    expect(out).toContain("run-start snapshot");
+    expect(out).toContain("any edit shifts the line numbers of every later section");
     // explicit "no hashes, no backticks" in the rendered list
     expect(out).not.toContain("- `## Build");
     expect(out).not.toContain("`## Build");

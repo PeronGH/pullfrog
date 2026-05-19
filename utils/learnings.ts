@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 import type { ToolContext } from "../mcp/server.ts";
 import { apiFetch } from "./apiFetch.ts";
 import { log } from "./cli.ts";
+import { MAX_LEARNINGS_LENGTH, truncateAtLineBoundary } from "./learningsTruncate.ts";
+
+export { MAX_LEARNINGS_LENGTH, truncateAtLineBoundary };
 
 /**
  * Repo-level learnings — operational facts about a repo (setup steps, test
@@ -34,15 +37,6 @@ import { log } from "./cli.ts";
 
 export const LEARNINGS_FILE_NAME = "pullfrog-learnings.md";
 
-/** server-side cap mirrors `MAX_LEARNINGS_LENGTH` in
- * `app/api/repo/[owner]/[repo]/learnings/route.ts`. truncating client-side
- * keeps the PATCH from being rejected with a 400. raised from 10k → 100k
- * once the TOC affordance landed: with line-range reads via the
- * server-parsed TOC the agent doesn't ingest the whole file, so the cap
- * can grow to whatever curation discipline allows. 100k holds ~400-500
- * short bullets. */
-const MAX_LEARNINGS_LENGTH = 100_000;
-
 export function learningsFilePath(tmpdir: string): string {
   return join(tmpdir, LEARNINGS_FILE_NAME);
 }
@@ -60,23 +54,6 @@ export async function seedLearningsFile(params: {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, params.current ?? "", "utf8");
   return path;
-}
-
-/** truncate at the last newline boundary before `cap` so we don't leave
- * a partial line at the tail (a half-truncated `## Headi` confuses the
- * server's next-seed TOC parse and shrinks visible structure). falls
- * back to a hard `slice` when the line boundary would discard a large
- * run of content — i.e. when the tail of `head` is one giant line (rare:
- * minified pastes, fenced log dumps). losing a partial last line is
- * preferable to losing kilobytes of body. */
-const TRUNCATION_LINE_BOUNDARY_TOLERANCE = 4096;
-function truncateAtLineBoundary(body: string, cap: number): string {
-  if (body.length <= cap) return body;
-  const head = body.slice(0, cap);
-  const lastNewline = head.lastIndexOf("\n");
-  if (lastNewline <= 0) return head;
-  if (cap - lastNewline > TRUNCATION_LINE_BOUNDARY_TOLERANCE) return head;
-  return head.slice(0, lastNewline);
 }
 
 /** read the agent-edited learnings file. returns null when the file is
