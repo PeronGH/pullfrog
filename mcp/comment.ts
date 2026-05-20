@@ -68,7 +68,7 @@ export function CreateCommentTool(ctx: ToolContext) {
     description:
       "Create a comment on a GitHub issue or PR. " +
       'Example: `create_issue_comment({ issueNumber: 1234, body: "Thanks for the report." })`. ' +
-      "For progress/plan updates on the current run use report_progress instead. Use type: 'Plan' for plan comments.",
+      "For progress/plan updates on the current run use report_progress instead — plan output (initial post AND revisions) is always posted via report_progress, never via this tool.",
     parameters: Comment,
     execute: execute(async ({ issueNumber, body, type: commentType }) => {
       const bodyWithFooter = addFooter(ctx, body);
@@ -153,7 +153,7 @@ export function EditCommentTool(ctx: ToolContext) {
 export const ReportProgress = type({
   body: type.string.describe("the progress update content to share"),
   "target_plan_comment?": type("boolean").describe(
-    "when true, update the existing plan comment (from select_mode lookup) instead of the progress comment; use when editing an existing plan"
+    "for revising an existing plan comment ONLY. set to true only when the PlanEdit checklist from select_mode tells you to (i.e. a prior plan comment was found for this issue). NEVER set on the initial plan post — the initial plan reuses the run's progress comment and is posted by calling report_progress without this flag."
   ),
 });
 

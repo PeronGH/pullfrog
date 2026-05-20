@@ -495,7 +495,7 @@ ${PR_SUMMARY_FORMAT}`,
 
 3. Produce a structured, actionable plan with clear milestones.
 
-4. Call \`${t("report_progress")}\` with the plan.`,
+4. Call \`${t("report_progress")}\` with the plan body. Do NOT set \`target_plan_comment\` — that flag is exclusively for revising an existing plan, and \`${t("select_mode")}\` will route you to a separate PlanEdit checklist when a prior plan comment exists for this issue.`,
     },
     {
       name: "Fix",
