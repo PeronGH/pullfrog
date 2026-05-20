@@ -172,6 +172,23 @@ describe("isApiKeyAuthError", () => {
     expect(isApiKeyAuthError("401 Invalid authentication")).toBe(true);
   });
 
+  // see #782 — direct-Anthropic 401 shape (revoked / mistyped / rotated
+  // ANTHROPIC_API_KEY) reaches us via Claude CLI as a JSON dump, not as
+  // any of the canonical "Invalid API key" strings. these matchers ensure
+  // the formatted CTA fires instead of the raw 401 JSON blob.
+  it("matches direct-Anthropic 401 shapes", () => {
+    expect(
+      isApiKeyAuthError(
+        'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"}}'
+      )
+    ).toBe(true);
+    expect(
+      isApiKeyAuthError(
+        "» Pullfrog result error: subtype=success, api_error_status=401, message=Failed to authenticate."
+      )
+    ).toBe(true);
+  });
+
   it("ignores unrelated errors", () => {
     expect(isApiKeyAuthError("git fetch failed")).toBe(false);
     expect(isApiKeyAuthError("")).toBe(false);

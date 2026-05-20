@@ -6,6 +6,17 @@ type ProviderErrorPattern = { regex: RegExp; label: string };
 const statusKey = `\\b(?:status[_ ]?code|http[_ ]?status|status)["']?\\s*[:=]\\s*["']?`;
 
 const PROVIDER_ERROR_PATTERNS: ProviderErrorPattern[] = [
+  // billing-payload patterns come BEFORE bare status-code patterns. providers
+  // commonly return 401 / 429 for billing/quota exhaustion (OpenCode Zen
+  // `CreditsError` / `FreeUsageLimitError`, Gemini `RESOURCE_EXHAUSTED` +
+  // "spending cap", Anthropic "Insufficient balance"). these are non-retryable
+  // and require user-billing action — distinct from a transient auth error or
+  // rate-limit. status-code patterns would otherwise win and surface
+  // "auth error (401)" / "rate limited (429)" with no billing hint. see #778.
+  { regex: /\bCreditsError\b/, label: "provider billing exhausted" },
+  { regex: /\bFreeUsageLimitError\b/, label: "provider billing exhausted" },
+  { regex: /Insufficient balance/i, label: "provider billing exhausted" },
+  { regex: /spending cap/i, label: "provider billing exhausted" },
   // auth patterns must come BEFORE rate-limit patterns. OpenRouter 401 error
   // payloads carry `x-ratelimit-*` response headers in the dump, and the
   // free-form rate-limit regex below would otherwise win on word-boundary

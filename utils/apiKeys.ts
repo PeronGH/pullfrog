@@ -120,10 +120,14 @@ export function validateAgentApiKey(params: {
 
 /**
  * Detect agent-runtime auth failures that should be reformatted as an actionable
- * key-fix CTA before being shown to the user. Covers the two shapes we see:
+ * key-fix CTA before being shown to the user. Covers the shapes we see:
  *   - missing key (validateAgentApiKey throw): contains MISSING_KEY_MARKER
  *   - revoked / invalid key (Claude CLI 401 surfaced via api_error_status):
  *     "Invalid API key · Fix external API key" + similar provider variants
+ *   - direct-Anthropic 401 (`Failed to authenticate. API Error: 401 ...
+ *     {"type":"error","error":{"type":"authentication_error", ...
+ *     "Invalid bearer token"}}`) emitted by the Claude CLI for revoked /
+ *     mistyped / rotated `ANTHROPIC_API_KEY`. see #782.
  */
 export function isApiKeyAuthError(text: string): boolean {
   if (!text) return false;
@@ -131,7 +135,11 @@ export function isApiKeyAuthError(text: string): boolean {
     text.includes(MISSING_KEY_MARKER) ||
     /Invalid API key/i.test(text) ||
     /\bUser not found\b/i.test(text) ||
-    /\bInvalid authentication\b/i.test(text)
+    /\bInvalid authentication\b/i.test(text) ||
+    /authentication_error/i.test(text) ||
+    /Invalid bearer token/i.test(text) ||
+    /api_error_status\s*=\s*401/i.test(text) ||
+    /API Error:\s*401/i.test(text)
   );
 }
 

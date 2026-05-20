@@ -41,6 +41,15 @@ export function formatAgentHangBody(input: {
 }): string | null {
   if (!input.diagnostic) return null;
 
+  // billing exhaustion (CreditsError / FreeUsageLimitError / spending cap /
+  // Insufficient balance) is mis-classified as transient by upstream harnesses
+  // and the run only ends when the activity-timeout watchdog fires (see #778).
+  // when we recognise the billing label, replace the generic "stalled — auth
+  // error" headline with a billing-specific CTA that names the actual remedy.
+  if (input.diagnostic.lastProviderError === "provider billing exhausted") {
+    return formatBillingExhaustedBody(input.diagnostic);
+  }
+
   const verb = input.isHang ? "stalled" : "failed";
   const cause = input.diagnostic.lastProviderError
     ? ` — likely cause: \`${input.diagnostic.lastProviderError}\``
@@ -112,4 +121,50 @@ function pickFence(content: string): string {
     if (match[0].length > max) max = match[0].length;
   }
   return "`".repeat(Math.max(3, max + 1));
+}
+
+/**
+ * Pull a billing URL out of the captured stderr if the provider helpfully
+ * embedded one (OpenCode Zen does — Anthropic and Gemini do not). Restricted
+ * to known billing/console hosts so a stray URL elsewhere in the buffer
+ * can't masquerade as the remedy link.
+ */
+function extractBillingUrl(lines: readonly string[]): string | undefined {
+  const urlPattern =
+    /https:\/\/(?:opencode\.ai\/[^\s"]*billing[^\s"]*|console\.anthropic\.com[^\s"]*|console\.cloud\.google\.com[^\s"]*billing[^\s"]*)/i;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = urlPattern.exec(lines[i] ?? "");
+    if (m) return m[0];
+  }
+  return undefined;
+}
+
+function formatBillingExhaustedBody(diagnostic: AgentDiagnostic): string {
+  const headline = `**${diagnostic.label} stopped** — your model provider returned a billing-exhausted response.`;
+
+  const billingUrl = extractBillingUrl(diagnostic.recentStderr);
+  const cta = billingUrl
+    ? `Top up your provider balance, then re-run: [${billingUrl}](${billingUrl})`
+    : "Top up your model-provider balance (or rotate to a key with remaining credits) and re-run.";
+  const explanation =
+    "The agent kept retrying the request because the provider marked the failure as transient. Pullfrog's activity-timeout watchdog ended the run after no further events were emitted.";
+
+  const parts = [headline, "", explanation, "", cta];
+
+  const tail = renderStderrTail(diagnostic.recentStderr);
+  if (tail) {
+    const fence = pickFence(tail);
+    parts.push(
+      "",
+      "<details><summary>Recent agent stderr</summary>",
+      "",
+      fence,
+      tail,
+      fence,
+      "",
+      "</details>"
+    );
+  }
+
+  return parts.join("\n");
 }

@@ -206,16 +206,28 @@ export async function runProxyResolution(ctx: {
       const summary = formatBillingErrorSummary(error, ctx.repo.owner);
       await writeSummary(summary).catch(() => {});
       // Mirror to the PR progress comment if the trigger created one (mention /
-      // PR event). Without this, auto-reload declines are only visible in the
-      // job summary — users rarely open that, so the agent just appears to
-      // silently stop mid-run.
-      await reportErrorToComment({ toolState: ctx.toolState, error: summary }).catch(() => {});
+      // PR event). When the trigger is silent (IncrementalReview on
+      // pull_request_synchronize), no progress comment exists; fall through to
+      // creating a fresh issue comment so the user actually sees the
+      // billing-exhaustion remediation copy. Without `createIfMissing`,
+      // auto-reload declines on silent triggers are visible only in the GH job
+      // summary, which most users never open — so back-to-back pushes silently
+      // burn through dispatches with no PR-side signal. see #775.
+      await reportErrorToComment({
+        toolState: ctx.toolState,
+        error: summary,
+        createIfMissing: true,
+      }).catch(() => {});
       throw error;
     }
     if (error instanceof TransientError) {
       const summary = formatTransientErrorSummary(error, ctx.repo.owner);
       await writeSummary(summary).catch(() => {});
-      await reportErrorToComment({ toolState: ctx.toolState, error: summary }).catch(() => {});
+      await reportErrorToComment({
+        toolState: ctx.toolState,
+        error: summary,
+        createIfMissing: true,
+      }).catch(() => {});
       throw error;
     }
     throw error;

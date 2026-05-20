@@ -70,6 +70,41 @@ describe("detectProviderError", () => {
     });
   });
 
+  describe("billing exhaustion", () => {
+    // see #778 — providers return 401 / 429 for billing/quota exhaustion
+    // (OpenCode Zen `CreditsError` / `FreeUsageLimitError`, Gemini
+    // `RESOURCE_EXHAUSTED` + spending cap, "Insufficient balance"). these
+    // are non-retryable; status-code patterns must NOT win and surface the
+    // misleading "auth error (401)" / "rate limited (429)" labels.
+    it("classifies OpenCode Zen CreditsError as billing exhausted, not 401", () => {
+      const stderr = JSON.stringify({
+        statusCode: 401,
+        responseBody:
+          '{"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/x/billing"}}',
+      });
+      expect(detectProviderError(stderr)).toBe("provider billing exhausted");
+    });
+
+    it("classifies OpenCode Zen FreeUsageLimitError as billing exhausted, not 429", () => {
+      const stderr = JSON.stringify({
+        statusCode: 429,
+        responseBody:
+          '{"type":"error","error":{"type":"FreeUsageLimitError","message":"Rate limit exceeded. Please try again later."}}',
+      });
+      expect(detectProviderError(stderr)).toBe("provider billing exhausted");
+    });
+
+    it("classifies Gemini spending-cap RESOURCE_EXHAUSTED as billing exhausted, not 429", () => {
+      const stderr =
+        'statusCode: 429, body: {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Your project has exceeded its monthly spending cap..."}';
+      expect(detectProviderError(stderr)).toBe("provider billing exhausted");
+    });
+
+    it("classifies bare 'Insufficient balance' as billing exhausted", () => {
+      expect(detectProviderError("error: Insufficient balance")).toBe("provider billing exhausted");
+    });
+  });
+
   describe("real provider errors", () => {
     it("detects 429 only when adjacent to a status key", () => {
       expect(detectProviderError('{"statusCode": 429}')).toBe("rate limited (429)");
