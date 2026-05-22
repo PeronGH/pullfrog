@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveCliModel } from "../models.ts";
 import { FREE_FALLBACK_SLUG, selectFallbackModelIfNeeded } from "./byokFallback.ts";
+
+describe("FREE_FALLBACK_SLUG", () => {
+  it("resolves in the curated catalog", () => {
+    expect(resolveCliModel(FREE_FALLBACK_SLUG)).toBe("opencode/big-pickle");
+  });
+
+  it("is opencode/big-pickle", () => {
+    expect(FREE_FALLBACK_SLUG).toBe("opencode/big-pickle");
+  });
+});
 
 describe("selectFallbackModelIfNeeded", () => {
   const originalEnv = { ...process.env };
@@ -86,6 +97,14 @@ describe("selectFallbackModelIfNeeded", () => {
   it("does not fall back for free models that need no key", () => {
     const result = selectFallbackModelIfNeeded({
       resolvedModel: "opencode/mimo-v2-pro-free",
+      proxyModel: undefined,
+    });
+    expect(result.fallback).toBe(false);
+  });
+
+  it("does not fall back when stored minimax-m2.5-free resolves to big-pickle", () => {
+    const result = selectFallbackModelIfNeeded({
+      resolvedModel: resolveCliModel("opencode/minimax-m2.5-free"),
       proxyModel: undefined,
     });
     expect(result.fallback).toBe(false);

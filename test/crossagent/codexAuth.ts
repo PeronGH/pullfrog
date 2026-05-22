@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { detectCodexRefresh } from "../../utils/codexHome.ts";
+import { detectCodexRefresh } from "../../utils/codexRefreshDetect.ts";
 import type { AgentResult, TestRunnerOptions, ValidationCheck } from "../utils.ts";
 import { defineFixture } from "../utils.ts";
 
@@ -24,7 +24,7 @@ import { defineFixture } from "../utils.ts";
  * invoked by `pnpm runtest`. instead, this test asserts the on-disk auth.json
  * state that the post-hook would consume, which is the genuine integration
  * boundary (everything past `detectCodexRefresh` is a single fetch + unit-
- * tested in codexHome.test.ts).
+ * tested in codexRefreshDetect.test.ts).
  *
  * requires `CODEX_AUTH_JSON` in the environment. dev-local: put it in
  * `.env`. CI: provisioned as `secrets.CODEX_AUTH_JSON` and forwarded by the
@@ -99,6 +99,7 @@ export const test: TestRunnerOptions = {
   },
   coverage: [
     "action/utils/codexHome.ts",
+    "action/utils/codexRefreshDetect.ts",
     "action/entryPost.ts",
     "action/agents/{opencode,opencode_v2}.ts",
   ],

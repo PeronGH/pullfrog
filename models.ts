@@ -343,6 +343,11 @@ export const providers = {
         resolve: "opencode/kimi-k2.6",
         openRouterResolve: "openrouter/moonshotai/kimi-k2.6",
       },
+      "minimax-m2.5": {
+        displayName: "MiniMax M2.5",
+        resolve: "opencode/minimax-m2.5",
+        openRouterResolve: "openrouter/minimax/minimax-m2.5",
+      },
       "gpt-5-nano": {
         displayName: "GPT Nano",
         resolve: "opencode/gpt-5-nano",
@@ -361,6 +366,7 @@ export const providers = {
         envVars: [],
         isFree: true,
         fallback: "opencode/big-pickle",
+        hidden: true,
       },
     },
   }),
@@ -498,6 +504,11 @@ export const providers = {
         displayName: "Kimi K2",
         resolve: "openrouter/moonshotai/kimi-k2.6",
         openRouterResolve: "openrouter/moonshotai/kimi-k2.6",
+      },
+      "minimax-m2.5": {
+        displayName: "MiniMax M2.5",
+        resolve: "openrouter/minimax/minimax-m2.5",
+        openRouterResolve: "openrouter/minimax/minimax-m2.5",
       },
     },
   }),

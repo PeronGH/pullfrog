@@ -38,6 +38,23 @@ export type RenderedRunError = {
   comment: string;
 };
 
+function isProviderModelNotFoundError(message: string): boolean {
+  return message.includes("ProviderModelNotFoundError");
+}
+
+function formatProviderModelNotFoundSummary(input: {
+  owner: string;
+  name: string;
+  raw: string;
+}): string {
+  return (
+    `Pullfrog's free fallback model is no longer available in OpenCode's catalog. ` +
+    `Add an API key for your configured model in the Pullfrog console for \`${input.owner}/${input.name}\`, ` +
+    `or contact support if this persists.\n\n` +
+    `\`\`\`\n${input.raw}\n\`\`\``
+  );
+}
+
 export function renderRunError(input: {
   errorMessage: string;
   repo: { owner: string; name: string };
@@ -81,6 +98,15 @@ export function renderRunError(input: {
 
   if (apiKeyErrorSummary) {
     return { summary: apiKeyErrorSummary, comment: apiKeyErrorSummary };
+  }
+
+  if (isProviderModelNotFoundError(input.errorMessage)) {
+    const body = formatProviderModelNotFoundSummary({
+      owner: input.repo.owner,
+      name: input.repo.name,
+      raw: input.errorMessage,
+    });
+    return { summary: body, comment: body };
   }
 
   if (hangBody) {

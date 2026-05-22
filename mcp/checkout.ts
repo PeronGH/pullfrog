@@ -791,12 +791,14 @@ export function CheckoutPrTool(ctx: ToolContext) {
 
   return tool({
     name: "checkout_pr",
+    timeoutMs: 600_000,
     description:
       "Checkout a pull request branch locally. This fetches the PR branch and sets up push configuration for fork PRs. " +
       "Returns diffPath pointing to the formatted diff file. " +
       "Example: `checkout_pr({ pull_number: 1234 })`. " +
-      "Transient fetch timeouts are common — retry the same call up to a few times before treating the failure as terminal. " +
-      "If the error mentions `.git/shallow.lock: File exists` or `.git/index.lock: File exists`, that's a stale lock from a prior timed-out fetch — remove it via the shell tool (`rm -f .git/shallow.lock .git/index.lock`) and retry.",
+      "Large repos can take several minutes — wait for the call to finish; do not treat a slow response as failure. " +
+      "If you see `MCP error -32001: Request timed out`, retry the same call without touching git lock files first — that error is a client-side abort. " +
+      "If the retry then reports `.git/shallow.lock: File exists` or `.git/index.lock: File exists`, remove those lock files via the shell tool and retry again.",
     parameters: CheckoutPr,
     execute: execute(async ({ pull_number }) => {
       const inFlight = inFlightCheckouts.get(pull_number);

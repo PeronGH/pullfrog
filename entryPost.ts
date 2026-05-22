@@ -24,11 +24,14 @@
 // saved). Best-effort: failures are logged but never throw — the workflow
 // is already done, and a missed refresh write-back means the user re-runs
 // `pullfrog auth codex` next time the chain breaks.
+//
+// Imports here MUST stay stdlib-only — GHA runs this file directly from the
+// checked-out action repo, which has no node_modules for sha-pinned consumers.
 
 import { existsSync, readFileSync } from "node:fs";
-import * as core from "@actions/core";
-import { apiFetch } from "./utils/apiFetch.ts";
-import { detectCodexRefresh } from "./utils/codexHome.ts";
+import { detectCodexRefresh } from "./utils/codexRefreshDetect.ts";
+import * as core from "./utils/ghaCore.ts";
+import { postApiFetch } from "./utils/postApiFetch.ts";
 
 async function main(): Promise<void> {
   const raw = core.getState("codex_writeback");
@@ -72,11 +75,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    // route through apiFetch so the Vercel preview-deployment SSO gate gets
-    // the `x-vercel-protection-bypass` header/query (raw fetch silently 401s
-    // against preview envs — production is unaffected but every preview-run
-    // refresh would be lost). see action/utils/apiFetch.ts.
-    const response = await apiFetch({
+    const response = await postApiFetch({
       path: "/api/runtime/secret",
       method: "PUT",
       headers: {
@@ -97,6 +96,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // never throw — post-hook failure must not fail the workflow
   core.warning(`codex post-hook: unexpected error — ${err}`);
 });

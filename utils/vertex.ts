@@ -71,6 +71,7 @@ export function materializeVertexCredentials(params: {
 export function cleanupVertexCredentials(credentials: VertexCredentials | undefined): void {
   if (!credentials) return;
   rmSync(credentials.secretDir, { recursive: true, force: true });
+  delete process.env[GOOGLE_APPLICATION_CREDENTIALS_ENV];
 }
 
 export function applyClaudeVertexEnv(env: Record<string, string | undefined>): void {
