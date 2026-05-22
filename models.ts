@@ -360,6 +360,7 @@ export const providers = {
         resolve: "opencode/minimax-m2.5-free",
         envVars: [],
         isFree: true,
+        fallback: "opencode/big-pickle",
       },
     },
   }),

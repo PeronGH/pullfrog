@@ -4,15 +4,14 @@ import { hasProviderKey } from "./apiKeys.ts";
  * Slug we fall back to when a BYOK-required model is configured but the
  * runner has no provider key in env. Picked because it's free
  * (`isFree: true`, `envVars: []` — see `action/models.ts`), stable, and
- * currently the strongest free OpenCode model in the catalog. If a
- * smarter free model is added later, update this single constant.
+ * currently served by OpenCode Zen without a key.
  *
  * The slug is intentionally hard-coded and not a config knob — the
  * fallback is a safety net, not a user-facing preference, and adding a
  * config surface here would just push the same "what to fall back to"
  * decision into another setting that goes stale the same way.
  */
-export const FREE_FALLBACK_SLUG = "opencode/minimax-m2.5-free";
+export const FREE_FALLBACK_SLUG = "opencode/big-pickle";
 
 export type FallbackDecision = { fallback: false } | { fallback: true; from: string; to: string };
 

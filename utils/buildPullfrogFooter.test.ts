@@ -4,17 +4,17 @@ import { buildPullfrogFooter } from "./buildPullfrogFooter.ts";
 describe("buildPullfrogFooter — fallbackFrom annotation", () => {
   it("renders the provider display name when fallbackFrom is set", () => {
     const footer = buildPullfrogFooter({
-      model: "opencode/minimax-m2.5-free",
+      model: "opencode/big-pickle",
       fallbackFrom: "anthropic/claude-opus",
     });
     expect(footer).toContain(
-      "Using `MiniMax M2.5` (free) (credentials for Anthropic not configured)"
+      "Using `Big Pickle` (free) (credentials for Anthropic not configured)"
     );
   });
 
   it("works for OpenAI's display name too", () => {
     const footer = buildPullfrogFooter({
-      model: "opencode/minimax-m2.5-free",
+      model: "opencode/big-pickle",
       fallbackFrom: "openai/gpt",
     });
     expect(footer).toContain("(credentials for OpenAI not configured)");
@@ -22,7 +22,7 @@ describe("buildPullfrogFooter — fallbackFrom annotation", () => {
 
   it("falls back to the raw provider key when the slug provider is unknown to the catalog", () => {
     const footer = buildPullfrogFooter({
-      model: "opencode/minimax-m2.5-free",
+      model: "opencode/big-pickle",
       fallbackFrom: "some-unknown/model",
     });
     expect(footer).toContain("(credentials for some-unknown not configured)");

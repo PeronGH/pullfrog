@@ -29,7 +29,7 @@ const fixture = defineFixture(
 
 function validator(result: AgentResult): ValidationCheck[] {
   const output = getAgentOutput(result);
-  const fellBack = /fell back from .* to opencode\/minimax-m2\.5-free/.test(output);
+  const fellBack = /fell back from .* to opencode\/big-pickle/.test(output);
   return [
     { name: "run_succeeded", passed: result.success },
     { name: "fallback_logged", passed: fellBack },
