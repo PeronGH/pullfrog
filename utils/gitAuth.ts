@@ -1,9 +1,14 @@
 /**
  * git authentication via GIT_ASKPASS.
  *
- * a localhost HTTP server serves tokens via single-use UUID codes.
- * each $git() call writes a unique askpass script with the server
- * port+code baked into the file body — no secrets in subprocess env.
+ * a localhost HTTP server serves tokens via UUID codes whose lifetime is
+ * bounded by the parent $git() invocation: register() makes the code active,
+ * the script (and any sibling subprocess — e.g. git-lfs pre-push) can fetch
+ * the token any number of times, and $git()'s finally calls revoke() to
+ * close the window. each $git() call writes a unique askpass script with
+ * the server port+code baked into the file body — no secrets in subprocess
+ * env. a replay of a revoked code trips a 409 and revokes the underlying
+ * github installation token.
  *
  * see wiki/askpass.md for full security documentation.
  */
@@ -88,9 +93,13 @@ export function setGitAuthServer(server: GitAuthServer): void {
  * a remote and need credentials. working-tree operations (checkout, merge)
  * use $() from shell.ts which has no token.
  *
- * per call: registers a one-time code with the auth server, writes a
- * unique askpass script with port+code baked in, spawns git with
- * GIT_ASKPASS pointing to the script, and deletes the script in finally.
+ * per call: registers a code with the auth server (valid for the lifetime
+ * of this invocation), writes a unique askpass script with port+code baked
+ * in, spawns git with GIT_ASKPASS pointing to the script. on completion,
+ * revokes the code and deletes the script in finally. multiple sibling
+ * askpass calls within one invocation (e.g. git itself + git-lfs pre-push)
+ * all see a valid code; replay attempts after finally trip a 409 and the
+ * server revokes the underlying github token as a tamper signal.
  *
  * @example
  * await $git("fetch", ["origin", "main"], { token });
@@ -149,8 +158,8 @@ export async function $git(
     });
 
     if (result.stderr.includes("askpass-compromised")) {
-      log.info("askpass code was already consumed — token has been revoked");
-      throw new Error("git auth failed — askpass code was already consumed, token revoked");
+      log.info("askpass code was replayed after revoke — token has been revoked");
+      throw new Error("git auth failed — askpass code was replayed after revoke, token revoked");
     }
 
     if (result.exitCode !== 0) {
@@ -175,10 +184,11 @@ export async function $git(
       stderr: result.stderr.trim(),
     };
   } finally {
+    authServer.revoke(code);
     try {
       unlinkSync(scriptPath);
     } catch {
-      // script may have self-deleted already
+      // script may already be gone (e.g. tmpdir cleanup raced us)
     }
   }
 }

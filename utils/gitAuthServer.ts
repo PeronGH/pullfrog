@@ -1,12 +1,17 @@
 /**
  * ASKPASS-based git authentication server.
  *
- * serves tokens via a localhost HTTP server with single-use UUID codes.
+ * serves tokens via a localhost HTTP server with per-$git()-call UUID codes.
  * each $git() call gets a unique askpass script with the port+code baked in.
  * the token never appears in subprocess env — only the script file path.
  *
- * tamper-evident: if a code is used twice, the second request triggers
- * immediate token revocation via the GitHub API as a precaution.
+ * lifetime: the code is valid for as long as the $git() invocation is
+ * running. multiple askpass calls within one invocation (e.g. git's own
+ * fetch/push + a git-lfs pre-push hook that also authenticates) all
+ * succeed. $git() calls revoke(code) in finally; subsequent requests for
+ * a revoked code trigger immediate token revocation via the GitHub API
+ * as a tamper-evidence precaution (an agent replaying the code after the
+ * legitimate window has closed is the realistic attack we still catch).
  */
 
 import { randomUUID } from "node:crypto";
@@ -15,20 +20,25 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { log } from "./cli.ts";
 
-type CodeState = "pending" | "consumed";
+type CodeState = "active" | "revoked";
 
-type PendingCode = {
+type CodeEntry = {
   token: string;
   state: CodeState;
-  timeout: NodeJS.Timeout;
+  // only present once the entry is revoked — bounds the replay-trap window.
+  // active entries have no timer because $git() can take arbitrarily long
+  // (large LFS pushes, slow networks, `activityTimeout: 0` on the spawn);
+  // any wall-clock TTL here would re-introduce the original LFS bug at
+  // a different boundary. revoke() is the only way out for an active code.
+  timeout?: NodeJS.Timeout;
 };
 
-const CODE_TTL_MS = 5 * 60 * 1000;
-const TAMPER_WINDOW_MS = 60_000;
+const REVOKED_TRAP_MS = 60_000;
 
 export type GitAuthServer = {
   port: number;
   register: (token: string) => string;
+  revoke: (code: string) => void;
   writeAskpassScript: (code: string) => string;
   close: () => Promise<void>;
   [Symbol.asyncDispose]: () => Promise<void>;
@@ -49,7 +59,7 @@ function revokeGitHubToken(token: string): void {
 }
 
 export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer> {
-  const codes = new Map<string, PendingCode>();
+  const codes = new Map<string, CodeEntry>();
 
   const server = createServer((req, res) => {
     if (req.method !== "GET") {
@@ -69,21 +79,20 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
       return;
     }
 
-    if (entry.state === "pending") {
-      // first use — return token, keep entry for tamper detection
-      entry.state = "consumed";
-      clearTimeout(entry.timeout);
-      entry.timeout = setTimeout(() => codes.delete(code), TAMPER_WINDOW_MS);
-      entry.timeout.unref();
+    if (entry.state === "active") {
+      // legitimate caller (git, git-lfs, or any subprocess of the running
+      // $git() call). hand back the token without consuming the code —
+      // revoke() in $git's finally is what closes the window.
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end(entry.token);
       return;
     }
 
-    // second request for same code — revoke token as a precaution
-    log.info("askpass code used twice — revoking token");
+    // request for a revoked code — the $git() window has closed, so this
+    // is an agent replaying the code. revoke the token as a precaution.
+    log.info("askpass code used after revoke — revoking token");
     revokeGitHubToken(entry.token);
-    clearTimeout(entry.timeout);
+    if (entry.timeout) clearTimeout(entry.timeout);
     codes.delete(code);
     res.writeHead(409, { "Content-Type": "text/plain" });
     res.end("compromised");
@@ -104,13 +113,18 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
 
   function register(token: string): string {
     const code = randomUUID();
-    const timeout = setTimeout(() => {
-      codes.delete(code);
-      log.debug(`git auth code expired: ${code.slice(0, 8)}...`);
-    }, CODE_TTL_MS);
-    timeout.unref();
-    codes.set(code, { token, state: "pending", timeout });
+    codes.set(code, { token, state: "active" });
     return code;
+  }
+
+  function revoke(code: string): void {
+    const entry = codes.get(code);
+    if (!entry) return;
+    entry.state = "revoked";
+    // keep the entry around briefly so a replay attempt trips the trap
+    // (token revocation) instead of returning an opaque 404.
+    entry.timeout = setTimeout(() => codes.delete(code), REVOKED_TRAP_MS);
+    entry.timeout.unref();
   }
 
   function writeAskpassScript(code: string): string {
@@ -119,10 +133,14 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
     const scriptPath = join(tmpdir, scriptName);
 
     // standalone node script — no project dependencies.
-    // git calls this twice: once for "Username for ..." and once for "Password for ...".
-    // username: return "x-access-token" locally (no server call).
-    // password: fetch token from auth server, self-delete, return token.
-    // 409 = code was already consumed by another process (tamper detected).
+    // git invokes this once per credential prompt — separate process spawn
+    // per prompt: one for "Username for ...", one for "Password for ...".
+    // sibling subprocesses (git-lfs pre-push, custom auth-bound hooks)
+    // invoke it independently for their own auth, also one spawn per prompt.
+    // all succeed as long as the parent $git() is still running, which is
+    // why neither the script nor the code is single-use. cleanup happens
+    // in $git()'s finally.
+    // 409 = code was already revoked by $git()'s finally (replay attempt).
     const content = [
       `#!/usr/bin/env node`,
       `var a=process.argv[2]||"";`,
@@ -132,10 +150,8 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
       `if(r.statusCode===409){process.stderr.write("askpass-compromised\\n");process.exit(1)}`,
       `if(r.statusCode!==200){process.exit(1)}`,
       `var d="";r.on("data",function(c){d+=c});`,
-      `r.on("end",function(){`,
-      `process.stdout.write(d+"\\n");`,
-      `try{require("fs").unlinkSync("${scriptPath.replace(/\\/g, "\\\\")}")}catch(e){}`,
-      `})}).on("error",function(){process.exit(1)})}`,
+      `r.on("end",function(){process.stdout.write(d+"\\n")})`,
+      `}).on("error",function(){process.exit(1)})}`,
     ].join("\n");
 
     writeFileSync(scriptPath, content, { mode: 0o700 });
@@ -144,7 +160,7 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
 
   async function close(): Promise<void> {
     for (const entry of codes.values()) {
-      clearTimeout(entry.timeout);
+      if (entry.timeout) clearTimeout(entry.timeout);
     }
     codes.clear();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -154,6 +170,7 @@ export async function startGitAuthServer(tmpdir: string): Promise<GitAuthServer>
   return {
     port,
     register,
+    revoke,
     writeAskpassScript,
     close,
     [Symbol.asyncDispose]: close,

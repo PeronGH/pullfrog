@@ -75,8 +75,23 @@ describe("token delivery", () => {
   });
 });
 
-describe("single-use enforcement (tamper detection)", () => {
-  it("returns 409 on second use of same code", async () => {
+describe("code lifecycle (tamper detection)", () => {
+  it("returns the token on repeated use while the code is active", async () => {
+    // a single $git() call can produce multiple legitimate askpass requests:
+    // git itself (username + password), git-lfs pre-push hook, custom hooks.
+    // they must all succeed until $git()'s finally calls revoke().
+    const tmp = makeTmpdir();
+    server = await startGitAuthServer(tmp);
+    const code = server.register("ghs_active_test");
+
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`http://127.0.0.1:${server.port}/${code}`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("ghs_active_test");
+    }
+  });
+
+  it("returns 409 after revoke (replay-after-call trap)", async () => {
     const tmp = makeTmpdir();
     server = await startGitAuthServer(tmp);
     const code = server.register("ghs_tamper_test");
@@ -84,10 +99,17 @@ describe("single-use enforcement (tamper detection)", () => {
     const first = await fetch(`http://127.0.0.1:${server.port}/${code}`);
     expect(first.status).toBe(200);
 
-    const second = await fetch(`http://127.0.0.1:${server.port}/${code}`);
-    expect(second.status).toBe(409);
-    const body = await second.text();
-    expect(body).toBe("compromised");
+    server.revoke(code);
+
+    const replay = await fetch(`http://127.0.0.1:${server.port}/${code}`);
+    expect(replay.status).toBe(409);
+    expect(await replay.text()).toBe("compromised");
+  });
+
+  it("revoke() on an unknown code is a no-op", async () => {
+    const tmp = makeTmpdir();
+    server = await startGitAuthServer(tmp);
+    expect(() => server!.revoke("nonexistent")).not.toThrow();
   });
 
   it("each register() call produces an independent code", async () => {
