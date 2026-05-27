@@ -187,7 +187,7 @@ export const providers = {
       "gemini-flash": {
         displayName: "Gemini Flash",
         resolve: "google/gemini-3.5-flash",
-        openRouterResolve: "openrouter/google/gemini-3-flash-preview",
+        openRouterResolve: "openrouter/google/gemini-3.5-flash",
       },
     },
   }),
@@ -335,8 +335,8 @@ export const providers = {
       },
       "gemini-flash": {
         displayName: "Gemini Flash",
-        resolve: "opencode/gemini-3-flash",
-        openRouterResolve: "openrouter/google/gemini-3-flash-preview",
+        resolve: "opencode/gemini-3.5-flash",
+        openRouterResolve: "openrouter/google/gemini-3.5-flash",
       },
       "kimi-k2": {
         displayName: "Kimi K2",
@@ -474,8 +474,8 @@ export const providers = {
       },
       "gemini-flash": {
         displayName: "Gemini Flash",
-        resolve: "openrouter/google/gemini-3-flash-preview",
-        openRouterResolve: "openrouter/google/gemini-3-flash-preview",
+        resolve: "openrouter/google/gemini-3.5-flash",
+        openRouterResolve: "openrouter/google/gemini-3.5-flash",
       },
       grok: {
         displayName: "Grok",
