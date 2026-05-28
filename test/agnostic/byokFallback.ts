@@ -69,6 +69,7 @@ export const test: TestRunnerOptions = {
     "action/utils/byokFallback.ts",
     "action/utils/apiKeys.ts",
     "action/utils/agent.ts",
+    "action/utils/openCodeModels.ts",
     "action/main.ts",
     "action/models.ts",
   ],

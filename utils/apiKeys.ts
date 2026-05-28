@@ -1,10 +1,4 @@
-import {
-  BEDROCK_MODEL_ID_ENV,
-  getModelEnvVars,
-  providers,
-  resolveDisplayAlias,
-  VERTEX_MODEL_ID_ENV,
-} from "../models.ts";
+import { BEDROCK_MODEL_ID_ENV, resolveDisplayAlias, VERTEX_MODEL_ID_ENV } from "../models.ts";
 import { getApiUrl } from "./apiUrl.ts";
 import {
   GOOGLE_CLOUD_PROJECT_ENV,
@@ -12,10 +6,6 @@ import {
   VERTEX_LOCATION_ENV,
   VERTEX_SERVICE_ACCOUNT_JSON_ENV,
 } from "./vertex.ts";
-
-const knownApiKeys: Set<string> = new Set(
-  Object.values(providers).flatMap((p) => [...p.envVars, ...(p.managedCredentials ?? [])])
-);
 
 /** marker prefix on the throw message for the catch-side reclassification path */
 const MISSING_KEY_MARKER = "no API key found";
@@ -72,13 +62,6 @@ function hasEnvVar(name: string): boolean {
   return typeof value === "string" && value.length > 0;
 }
 
-/** check if the user has a BYOK key for the given model's provider (does not throw) */
-export function hasProviderKey(model: string): boolean {
-  const requiredVars = getModelEnvVars(model);
-  if (requiredVars.length === 0) return true;
-  return requiredVars.some((v) => hasEnvVar(v));
-}
-
 function validateBedrockSetup(params: { owner: string; name: string }): void {
   const hasAuth =
     hasEnvVar("AWS_BEARER_TOKEN_BEDROCK") ||
@@ -112,18 +95,24 @@ function validateVertexSetup(params: { owner: string; name: string }): void {
   }
 }
 
+/**
+ * Validate that the resolved model can actually be served by the chosen
+ * agent. For routing slugs (Bedrock / Vertex) the auth shape is multi-var
+ * (auth + region/location + model-id) and `opencode models` doesn't catch
+ * gaps in the latter two — keep dedicated setup validators. For the
+ * opencode path, the authoritative answer comes from OpenCode's own model
+ * introspection (`authorized` set captured in `openCodeModels.ts`). For
+ * the claude path, fall back to the static check (`ANTHROPIC_API_KEY` /
+ * `CLAUDE_CODE_OAUTH_TOKEN`).
+ */
 export function validateAgentApiKey(params: {
   agent: { name: string };
   model: string | undefined;
+  authorized: Set<string>;
   owner: string;
   name: string;
 }): void {
-  // if a specific model is configured, only check that model's required env vars
   if (params.model) {
-    // routing slugs (e.g. bedrock) get a tailored validation path because
-    // their auth shape doesn't match the standard "any one envVar present"
-    // rule (Bedrock needs auth + region + model-id, with auth being either
-    // a bearer token OR an access-key pair).
     const alias = resolveDisplayAlias(params.model);
     if (alias?.routing === "bedrock") {
       validateBedrockSetup({ owner: params.owner, name: params.name });
@@ -134,13 +123,11 @@ export function validateAgentApiKey(params: {
       return;
     }
 
-    // upstream `resolveModel` translates routing slugs into raw backend
-    // model IDs (e.g. `us.anthropic.claude-opus-4-6-v1`), which have no `/`
-    // and so isn't parseable as `provider/model`. these IDs only reach this
-    // function via routing aliases, so re-run the matching setup check rather
-    // than falling through to `getModelEnvVars` (which would throw inside
-    // parseModel). resolveModel itself already enforced the model-id env var,
-    // but auth + location/region are still validated here.
+    // raw backend model IDs (post-resolveModel for routing slugs) have no
+    // `/`. discriminate by the env-var sentinel, then run the matching
+    // setup validator — `opencode models` doesn't help here because the
+    // Bedrock/Vertex provider plugins need region/location/model-id wired
+    // through env regardless of CLI-side auth.
     if (!params.model.includes("/")) {
       if (process.env[VERTEX_MODEL_ID_ENV]?.trim() === params.model) {
         validateVertexSetup({ owner: params.owner, name: params.name });
@@ -150,19 +137,23 @@ export function validateAgentApiKey(params: {
       return;
     }
 
-    const requiredVars = getModelEnvVars(params.model);
-    // free models have no required env vars — skip validation entirely
-    if (requiredVars.length === 0) return;
-    if (requiredVars.some((v) => hasEnvVar(v))) return;
+    if (params.agent.name === "opencode") {
+      if (params.authorized.has(params.model)) return;
+      throw new Error(buildMissingApiKeyError({ owner: params.owner, name: params.name }));
+    }
 
+    // claude: single-provider check on the Anthropic auth shapes.
+    if (hasEnvVar("ANTHROPIC_API_KEY") || hasEnvVar("CLAUDE_CODE_OAUTH_TOKEN")) return;
     throw new Error(buildMissingApiKeyError({ owner: params.owner, name: params.name }));
   }
 
-  // no model configured — auto-select requires at least one known provider key
-  const hasAnyKey = [...knownApiKeys].some((k) => hasEnvVar(k));
-  if (!hasAnyKey) {
+  // no model configured (auto-select path).
+  if (params.agent.name === "opencode") {
+    if (params.authorized.size > 0) return;
     throw new Error(buildMissingApiKeyError({ owner: params.owner, name: params.name }));
   }
+  if (hasEnvVar("ANTHROPIC_API_KEY") || hasEnvVar("CLAUDE_CODE_OAUTH_TOKEN")) return;
+  throw new Error(buildMissingApiKeyError({ owner: params.owner, name: params.name }));
 }
 
 /**

@@ -599,6 +599,7 @@ export async function checkoutPrBranch(
   const postCheckoutHook = await executeLifecycleHook({
     event: "post-checkout",
     script: params.postCheckoutScript,
+    normalizeWorkingTreeAfter: true,
   });
   return { hookWarning: postCheckoutHook.warning };
 }

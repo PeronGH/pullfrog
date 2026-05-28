@@ -1,20 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { isKeyOf } from "@ark/util";
 import { detect } from "package-manager-detector";
 import { resolveCommand } from "package-manager-detector/commands";
 import { log } from "../utils/cli.ts";
+import { ensurePackageManager, resolvePackageManagerSpec } from "../utils/packageManager.ts";
 import { spawn } from "../utils/subprocess.ts";
 import type { NodePackageManager, NodePrepResult, PrepDefinition, PrepOptions } from "./types.ts";
-
-// install command templates for each package manager (version placeholder: {version})
-const nodePackageManagers: Record<NodePackageManager, string[]> = {
-  npm: ["echo", "npm is already installed"],
-  pnpm: ["npm", "install", "-g", "{version}"],
-  yarn: ["npm", "install", "-g", "{version}"],
-  bun: ["npm", "install", "-g", "{version}"],
-  deno: ["sh", "-c", "curl -fsSL https://deno.land/install.sh | sh"],
-};
 
 async function isCommandAvailable(command: string): Promise<boolean> {
   const result = await spawn({
@@ -25,57 +16,33 @@ async function isCommandAvailable(command: string): Promise<boolean> {
   return result.exitCode === 0;
 }
 
-interface PackageManagerSpec {
-  name: NodePackageManager;
-  installSpec: string; // e.g., "pnpm@8.15.0" (without hash suffix)
-}
-
-function getPackageManagerFromPackageJson(): PackageManagerSpec | null {
-  const packageJsonPath = join(process.cwd(), "package.json");
-  try {
-    const content = readFileSync(packageJsonPath, "utf-8");
-    const pkg = JSON.parse(content) as { packageManager?: string };
-    if (!pkg.packageManager) return null;
-
-    // format: "pnpm@8.15.0" or "pnpm@8.15.0+sha512.abc123..."
-    // strip the hash suffix (+sha256.xxx) as npm install doesn't understand it
-    const withoutHash = pkg.packageManager.split("+")[0];
-    const name = withoutHash.split("@")[0];
-    if (isKeyOf(name, nodePackageManagers)) {
-      return { name, installSpec: withoutHash };
-    }
-    log.warning(`unknown packageManager in package.json: ${pkg.packageManager}`);
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function installPackageManager(
+// fallback installers for managers corepack doesn't ship shims for.
+// pnpm and yarn are handled by `ensurePackageManager` (corepack); bun and
+// deno fall through to here because corepack ignores them.
+async function installFallback(
   name: NodePackageManager,
   installSpec: string
 ): Promise<string | null> {
-  if (name === "npm") return null; // npm is always available
-  log.info(`» installing ${installSpec}...`);
-  const [cmd, ...templateArgs] = nodePackageManagers[name];
-  const args = templateArgs.map((arg) => (arg === "{version}" ? installSpec : arg));
+  if (name === "npm") return null;
+  log.info(`» installing ${installSpec} via npm install -g (corepack does not manage ${name})`);
+  const args =
+    name === "deno"
+      ? ["-c", "curl -fsSL https://deno.land/install.sh | sh"]
+      : ["install", "-g", installSpec];
+  const cmd = name === "deno" ? "sh" : "npm";
   const result = await spawn({
     cmd,
     args,
     env: { PATH: process.env.PATH || "", HOME: process.env.HOME || "" },
     onStderr: (chunk) => process.stderr.write(chunk),
   });
-
   if (result.exitCode !== 0) {
     return result.stderr || `failed to install ${name}`;
   }
-
-  // deno installs to $HOME/.deno/bin - add to PATH for subsequent commands
   if (name === "deno") {
     const denoPath = join(process.env.HOME || "", ".deno", "bin");
     process.env.PATH = `${denoPath}:${process.env.PATH}`;
   }
-
   log.info(`» installed ${name}`);
   return null;
 }
@@ -89,30 +56,34 @@ export const installNodeDependencies: PrepDefinition = {
   },
 
   run: async (options: PrepOptions): Promise<NodePrepResult> => {
-    // check packageManager field in package.json first (takes priority)
-    const fromPackageJson = getPackageManagerFromPackageJson();
+    // prefer the project's declared spec (devEngines.packageManager wins over
+    // packageManager). fall back to lockfile detection when nothing is declared.
+    // restrict detect() to the lockfile strategy: `detected` here doubles as
+    // the lockfile-presence gate below, and the default strategy set also
+    // returns positives off `packageManager`/`devEngines` fields (which would
+    // mask the very case we're trying to detect — declared manager but no
+    // lockfile committed).
+    const declared = await resolvePackageManagerSpec(process.cwd());
+    const detected = await detect({ cwd: process.cwd(), strategies: ["lockfile"] });
 
-    // detect from lockfile as fallback
-    const detected = await detect({ cwd: process.cwd() });
+    const packageManager: NodePackageManager =
+      declared?.name ?? (detected?.name as NodePackageManager) ?? "npm";
+    const agent = detected?.agent ?? packageManager;
 
-    // prefer package.json field, fall back to lockfile detection, default to npm
-    const packageManager = fromPackageJson?.name || (detected?.name as NodePackageManager) || "npm";
-    const installSpec = fromPackageJson?.installSpec || packageManager;
-    const agent = detected?.agent || packageManager;
-
-    if (fromPackageJson) {
-      log.info(`» using packageManager from package.json: ${fromPackageJson.installSpec}`);
+    if (declared) {
+      log.info(
+        `» using ${packageManager}@${declared.version} from package.json (${declared.source})`
+      );
     } else if (detected) {
       log.info(`» detected package manager: ${packageManager} (${agent})`);
     } else {
-      log.info(`» no package manager detected, defaulting to npm`);
+      log.info(`» no package manager declared, defaulting to npm`);
     }
 
-    // check if package manager is available, install if needed
+    // provisioning: corepack for pnpm/yarn, legacy npm-install-g for bun/deno.
+    // when shell is disabled we can't run installers (they execute code), so
+    // we require the binary to already be on PATH.
     if (!(await isCommandAvailable(packageManager))) {
-      // SECURITY: when shell is disabled, don't install package managers.
-      // installPackageManager runs `npm install -g` or `curl | sh` (for deno),
-      // both of which execute code. the package manager must already be available.
       if (options.ignoreScripts) {
         return {
           language: "node",
@@ -123,26 +94,50 @@ export const installNodeDependencies: PrepDefinition = {
           ],
         };
       }
-      log.info(`» ${packageManager} not found, attempting to install...`);
-      const installError = await installPackageManager(packageManager, installSpec);
-      if (installError) {
-        return {
-          language: "node",
-          packageManager,
-          dependenciesInstalled: false,
-          issues: [installError],
-        };
+
+      let provisioned = false;
+      if (declared) provisioned = await ensurePackageManager(declared);
+      if (!provisioned) {
+        const fallbackSpec = declared ? `${declared.name}@${declared.version}` : packageManager;
+        const installError = await installFallback(packageManager, fallbackSpec);
+        if (installError) {
+          return {
+            language: "node",
+            packageManager,
+            dependenciesInstalled: false,
+            issues: [installError],
+          };
+        }
       }
+    } else if (declared) {
+      // PATH already has the binary — but it may be the wrong version.
+      // ensurePackageManager is idempotent (caches on `--version` match) so
+      // this is cheap when main.ts already activated it.
+      await ensurePackageManager(declared);
     }
 
     // frozen-lockfile install only. eager prep is non-mutating by contract:
     // we run it before the agent starts and any artifact it leaves in the
     // tree (e.g. a generated `package-lock.json`) trips the dirty-tree
     // post-run gate and produces a spurious PR. `frozen` commands
-    // (`npm ci`, `pnpm install --frozen-lockfile`, etc.) fail cleanly
-    // without modifying state when there's no lockfile, which is exactly
-    // what we want — repos that need a non-frozen install must opt in via
-    // a `setup` lifecycle hook (`action/utils/lifecycle.ts`).
+    // (`npm ci`, `pnpm install --frozen-lockfile`, etc.) were assumed to
+    // fail cleanly without a lockfile — that assumption is false for
+    // pnpm 11.1.1 against a no-deps `package.json` (it silently writes an
+    // empty `pnpm-lock.yaml` despite the flag). gate on `detect()` having
+    // found a lockfile; it walks up the tree (so monorepo subpackages
+    // resolve to the workspace-root lockfile) and recognizes every
+    // manager's accepted lockfile variants (`bun.lockb` + `bun.lock`,
+    // `npm-shrinkwrap.json` + `package-lock.json`, etc.). when none is
+    // present, the project either has no installable dependencies or
+    // opts into install via a `setup` lifecycle hook
+    // (`action/utils/lifecycle.ts`); either way, eager prep should skip.
+    if (!detected) {
+      log.info(
+        `» skipping ${packageManager} install: no lockfile found (would otherwise risk lockfile drift)`
+      );
+      return { language: "node", packageManager, dependenciesInstalled: false, issues: [] };
+    }
+
     const resolved = resolveCommand(agent, "frozen", []);
     if (!resolved) {
       return {

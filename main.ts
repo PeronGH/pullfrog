@@ -3,6 +3,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { agents } from "./agents/index.ts";
 import { reportProgress } from "./mcp/comment.ts";
 import { startInstallation } from "./mcp/dependencies.ts";
 import { startMcpHttpServer, type ToolContext } from "./mcp/server.ts";
@@ -19,6 +20,7 @@ import { validateAgentApiKey } from "./utils/apiKeys.ts";
 import { resolveBody } from "./utils/body.ts";
 import { selectFallbackModelIfNeeded } from "./utils/byokFallback.ts";
 import { log } from "./utils/cli.ts";
+import { installCodexAuth } from "./utils/codexHome.ts";
 import { recordDiffReadFromToolUse } from "./utils/diffCoverage.ts";
 import { onExitSignal } from "./utils/exitHandler.ts";
 import { resolveGit, setGitAuthServer } from "./utils/gitAuth.ts";
@@ -28,7 +30,13 @@ import { resolveInstructions } from "./utils/instructions.ts";
 import { persistLearnings, seedLearningsFile } from "./utils/learnings.ts";
 import { executeLifecycleHook } from "./utils/lifecycle.ts";
 import { normalizeEnv, sanitizeSecret } from "./utils/normalizeEnv.ts";
+import {
+  captureAuthorizedModels,
+  captureBaselineModels,
+  getAuthorizedModels,
+} from "./utils/openCodeModels.ts";
 import { applyOverrides } from "./utils/overrides.ts";
+import { ensurePackageManager, resolvePackageManagerSpec } from "./utils/packageManager.ts";
 import { aggregateUsage, patchWorkflowRunFields } from "./utils/patchWorkflowRunFields.ts";
 import { resolveOutputSchema, resolvePayload, resolvePromptInput } from "./utils/payload.ts";
 import { type OidcCredentials, runProxyResolution } from "./utils/proxy.ts";
@@ -115,6 +123,20 @@ export async function main(): Promise<MainResult> {
   const runContext = await resolveRunContextData({ octokit: initialOctokit, token: jobToken });
   timer.checkpoint("runContextData");
 
+  // tmpdir hoisted out of the try block: `installFromNpmTarball` reads
+  // PULLFROG_TEMP_DIR (set as a side effect of createTempDirectory) when
+  // the opencode CLI install runs below for BYOK introspection. agent +
+  // mcp server setup further down also consume the same tmpdir.
+  const tmpdir = createTempDirectory();
+
+  // install OpenCode + capture the BASELINE model set BEFORE dbSecrets and
+  // Codex auth.json are in scope. this is the set of models OpenCode can
+  // route from the runner's pre-existing environment alone (workflow
+  // `env:` block + GH Actions secrets). install is fs-cached, so the
+  // duplicate call inside the opencode agent's run() is a no-op.
+  const opencodeCliPath = await agents.opencode.install();
+  captureBaselineModels(opencodeCliPath);
+
   // inject account-level secrets into process.env (YAML secrets take precedence).
   // sanitizeSecret trims + masks so accidental trailing whitespace doesn't leak
   // through GitHub Actions' line-based log masking. whitespace-only values
@@ -129,6 +151,19 @@ export async function main(): Promise<MainResult> {
     const count = Object.keys(runContext.dbSecrets).length;
     if (count > 0) log.info(`» ${count} db secret(s) loaded`);
   }
+
+  // materialize Codex auth.json (idempotent — opencode agent re-calls inside
+  // run() and writes the same file). this has to land BEFORE
+  // captureAuthorizedModels so OpenCode's model introspection sees the
+  // OAuth-routed openai/* models.
+  installCodexAuth();
+
+  // capture the AUTHORIZED model set after dbSecrets + Codex auth.json are
+  // applied. this is the authoritative source for the BYOK fallback
+  // decision and the opencode-agent path of validateAgentApiKey — strictly
+  // more accurate than the static envVars/managedCredentials catalog,
+  // which can miss new auth shapes.
+  captureAuthorizedModels(opencodeCliPath);
 
   // configure env allowlist for subprocess filtering
   if (runContext.repoSettings.envAllowlist) {
@@ -212,8 +247,6 @@ export async function main(): Promise<MainResult> {
       }
     }
 
-    const tmpdir = createTempDirectory();
-
     await using gitAuthServer = await startGitAuthServer(tmpdir);
     setGitAuthServer(gitAuthServer);
 
@@ -228,9 +261,11 @@ export async function main(): Promise<MainResult> {
     // — exactly the silent-churn pattern that took out 15 accounts before
     // this landed. Router/proxy runs are skipped (Pullfrog mints the key);
     // see `selectFallbackModelIfNeeded` for the full skip set.
+    const authorized = getAuthorizedModels();
     const fallback = selectFallbackModelIfNeeded({
       resolvedModel: initialResolvedModel,
       proxyModel: payload.proxyModel,
+      authorized,
     });
     // when fallback engages we bypass `resolveModel` for the new slug —
     // `PULLFROG_MODEL` has higher priority than the slug arg inside that
@@ -256,12 +291,27 @@ export async function main(): Promise<MainResult> {
     // so the "Using `…`" badge reflects what actually ran.
     toolState.model = payload.proxyModel ?? resolvedModel ?? effectiveSlug;
 
-    validateAgentApiKey({
-      agent,
-      model: payload.proxyModel ?? resolvedModel ?? effectiveSlug,
-      owner: runContext.repo.owner,
-      name: runContext.repo.name,
-    });
+    // skip validation when fallback engaged: the effective model is the
+    // free fallback (`opencode/big-pickle`) and the fallback gate already
+    // authoritatively decided "this model is OK to run". re-validating
+    // would spuriously throw if `opencode models` doesn't list big-pickle.
+    //
+    // also skip when proxyModel is set: `runProxyResolution` already minted
+    // OPENROUTER_API_KEY and the server-side gate (`run-context/route.ts`)
+    // is the authority on "can this run use the router". the `authorized`
+    // set was captured BEFORE the proxy mint, so it doesn't see the
+    // openrouter slug — re-validating would spuriously throw. mirrors the
+    // analogous `if (input.proxyModel) return { fallback: false }` skip in
+    // `selectFallbackModelIfNeeded`.
+    if (!fallback.fallback && !payload.proxyModel) {
+      validateAgentApiKey({
+        agent,
+        model: payload.proxyModel ?? resolvedModel ?? effectiveSlug,
+        authorized,
+        owner: runContext.repo.owner,
+        name: runContext.repo.name,
+      });
+    }
 
     await setupGit({
       gitToken: tokenRef.gitToken,
@@ -274,12 +324,27 @@ export async function main(): Promise<MainResult> {
     });
     timer.checkpoint("git");
 
+    // pin the project's package manager via corepack BEFORE the setup hook
+    // runs. without this, a customer setup script like `npm i -g pnpm &&
+    // pnpm install` installs whatever pnpm is "latest" today and writes
+    // unrelated lockfile drift (e.g. the `packageManagerDependencies`
+    // block pnpm 11.3 added) into our commit — see #844. resolution
+    // honors pnpm 11+ precedence (`devEngines.packageManager` over
+    // `packageManager`); failure is non-fatal — we fall back to whatever
+    // is on PATH with a warning.
+    const pmSpec = await resolvePackageManagerSpec(process.cwd());
+    if (pmSpec) {
+      await ensurePackageManager(pmSpec);
+    }
+    timer.checkpoint("packageManager");
+
     // execute setup lifecycle hook (runs once at initialization).
     // setup is load-bearing — if it fails the rest of the run is in an
     // undefined state, so upgrade the soft-fail warning to a hard error.
     const setupHook = await executeLifecycleHook({
       event: "setup",
       script: runContext.repoSettings.setupScript,
+      normalizeWorkingTreeAfter: true,
     });
     if (setupHook.warning) {
       throw new Error(setupHook.warning);

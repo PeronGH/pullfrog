@@ -6,10 +6,10 @@
 // then it keeps both runners synchronized so a config drift can't make v1 a
 // silently-broken fallback.
 
-import { execFileSync } from "node:child_process";
 import { modelAliases } from "../models.ts";
 import { log } from "../utils/cli.ts";
 import { installFromNpmTarball } from "../utils/install.ts";
+import { getAuthorizedModels } from "../utils/openCodeModels.ts";
 import { getDevDependencyVersion } from "../utils/version.ts";
 import { REVIEWER_AGENT_NAME, REVIEWER_SYSTEM_PROMPT } from "./reviewer.ts";
 import { deriveSubagentModels } from "./subagentModels.ts";
@@ -91,42 +91,22 @@ export async function installOpencodeCli(params: { binPath: string }): Promise<s
 //
 // steps 1–2 of model resolution (PULLFROG_MODEL env, slug resolution) happen
 // in resolveModel() in utils/agent.ts before the agent runs. this is step 3:
-// auto-select via `opencode models`.
+// auto-select using the authorized model set captured in main.ts via
+// `opencode models` introspection.
 
 const AUTO_SELECT_WARNING =
   "select a model explicitly in the Pullfrog console (https://pullfrog.com/console) to avoid this.";
 
-function getOpenCodeModels(cliPath: string): string[] {
-  try {
-    const output = execFileSync(cliPath, ["models"], {
-      encoding: "utf-8",
-      timeout: 30_000,
-      env: process.env,
-    });
-    return output
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-  } catch (error) {
-    log.debug(
-      `» failed to run \`opencode models\`: ${error instanceof Error ? error.message : String(error)}`
-    );
-    return [];
-  }
-}
-
-export function autoSelectModel(cliPath: string): string | undefined {
-  const availableModels = getOpenCodeModels(cliPath);
-  const availableSet = new Set(availableModels);
-  if (availableSet.size > 0) {
-    log.debug(`» opencode models (${availableSet.size}): ${availableModels.join(", ")}`);
+export function autoSelectModel(): string | undefined {
+  const authorized = getAuthorizedModels();
+  if (authorized.size > 0) {
     // skip hidden aliases (internal subagent-tier targets like
     // opencode/gpt-5.4) — they should never surface as a user-facing
     // orchestrator pick. mirrors the selectable-list filter in
     // components/ModelSelector.tsx and action/commands/init.ts.
     const match =
-      modelAliases.find((a) => !a.hidden && a.preferred && availableSet.has(a.resolve)) ??
-      modelAliases.find((a) => !a.hidden && availableSet.has(a.resolve));
+      modelAliases.find((a) => !a.hidden && a.preferred && authorized.has(a.resolve)) ??
+      modelAliases.find((a) => !a.hidden && authorized.has(a.resolve));
     if (match) {
       log.info(
         `» model: ${match.resolve} (auto-selected${match.preferred ? " — preferred" : ""} curated match)`
@@ -135,7 +115,7 @@ export function autoSelectModel(cliPath: string): string | undefined {
       return match.resolve;
     }
     log.info(
-      `» opencode has ${availableSet.size} models but none match curated aliases — letting OpenCode auto-select`
+      `» opencode has ${authorized.size} models but none match curated aliases — letting OpenCode auto-select`
     );
   }
 
