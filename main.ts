@@ -514,7 +514,9 @@ export async function main(): Promise<MainResult> {
     todoTracker = createTodoTracker(async (body) => {
       if (progressCallbackDisabled || !toolContext) return;
       try {
-        await reportProgress(toolContext, { body });
+        // liveProgress: this is the auto-rendered checklist, not a deliberate
+        // final answer — must not flip wasUpdated / lastProgressBody (see #868).
+        await reportProgress(toolContext, { body, liveProgress: true });
       } catch (err) {
         log.debug(`progress update failed: ${err}`);
       }
@@ -656,7 +658,7 @@ export async function main(): Promise<MainResult> {
 
     return await handleAgentResult({
       result,
-      toolState,
+      toolContext,
       silent: payload.event.silent ?? false,
     });
   } catch (error) {

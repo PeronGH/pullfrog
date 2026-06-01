@@ -165,14 +165,15 @@ export const ReportProgress = type({
  *   - object:    active comment — will update it in place via the right REST endpoint for its type
  *   - null:      deliberately deleted (e.g. after submitting a PR review) — skips silently
  *
- * The body is always tracked in lastProgressBody for the job summary regardless of comment state.
+ * The body is tracked in lastProgressBody for the job summary regardless of comment state,
+ * EXCEPT for `liveProgress` (todo-tracker) writes — see the param note below.
  *
  * The "existing plan comment" path always targets a top-level issue comment (plan comments are
  * created by create_issue_comment with type:"Plan", never as review-thread replies).
  */
 export async function reportProgress(
   ctx: ToolContext,
-  params: { body: string; target_plan_comment?: boolean }
+  params: { body: string; target_plan_comment?: boolean; liveProgress?: boolean }
 ): Promise<{
   commentId?: number;
   url?: string;
@@ -180,8 +181,15 @@ export async function reportProgress(
   action: "created" | "updated" | "skipped";
 }> {
   const { body, target_plan_comment } = params;
-  // always track the body for job summary
-  ctx.toolState.lastProgressBody = body;
+  // `liveProgress` marks the automatic todo-tracker checklist render — a live
+  // progress update, NOT the agent's deliberate final answer. such writes must
+  // not record `lastProgressBody` or flip `wasUpdated`: both signal "a real
+  // user-facing answer landed", and letting an auto checklist trip them masks
+  // the #868 salvage (it would post the checklist instead of the real output,
+  // or skip salvage entirely) and triggers stranded-comment deletion.
+  if (!params.liveProgress) {
+    ctx.toolState.lastProgressBody = body;
+  }
 
   // silent events (e.g., auto-label, pr-summary Task) should never create or update progress comments.
   // the body is still tracked above for the GitHub Actions job summary.
@@ -211,7 +219,7 @@ export async function reportProgress(
       bodyWithFooter
     );
 
-    ctx.toolState.wasUpdated = true;
+    if (!params.liveProgress) ctx.toolState.wasUpdated = true;
 
     if (isPlanMode && result.node_id) {
       await patchWorkflowRunFields(ctx, { planCommentNodeId: result.node_id });
@@ -240,7 +248,7 @@ export async function reportProgress(
 
     const result = await updateProgressComment(apiCtx, existingComment, bodyWithFooter);
 
-    ctx.toolState.wasUpdated = true;
+    if (!params.liveProgress) ctx.toolState.wasUpdated = true;
 
     if (isPlanMode && result.node_id) {
       await patchWorkflowRunFields(ctx, { planCommentNodeId: result.node_id });
@@ -278,7 +286,7 @@ export async function reportProgress(
   );
 
   ctx.toolState.progressComment = created.comment;
-  ctx.toolState.wasUpdated = true;
+  if (!params.liveProgress) ctx.toolState.wasUpdated = true;
 
   // if Plan mode, update the comment to add the "Implement plan" link
   if (isPlanMode) {

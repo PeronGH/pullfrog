@@ -240,6 +240,22 @@ function runPullfrogCliInner(context: RuntimeContext, cliArgs: string[]): void {
   runPackageCli(context, FALLBACK_PACKAGE_SPEC, cliArgs);
 }
 
+// the inner CLI and the bootstrap install run with `stdio: "inherit"`, so on a
+// non-zero exit they've already printed their own `##[error]` line. node turns
+// that exit into a thrown `Error: Command failed…`; letting it bubble crashes
+// the outer bootstrap with a `node:internal/errors` stack trace that buries the
+// real failure (#862, #867). propagate the child's exit code silently instead;
+// only genuine spawn failures (ENOENT, missing npx, …) still surface.
+function propagateChildExit(error: unknown): never {
+  if (error instanceof Error && "status" in error && typeof error.status === "number") {
+    process.exit(error.status);
+  }
+  if (error instanceof Error && "signal" in error && error.signal != null) {
+    process.exit(1);
+  }
+  throw error;
+}
+
 export function runPullfrogCli(params: RunPullfrogCliParams): void {
   const context = createRuntimeContext();
 
@@ -253,5 +269,9 @@ export function runPullfrogCli(params: RunPullfrogCliParams): void {
     return;
   }
 
-  runPullfrogCliInner(context, params.cliArgs);
+  try {
+    runPullfrogCliInner(context, params.cliArgs);
+  } catch (error) {
+    propagateChildExit(error);
+  }
 }

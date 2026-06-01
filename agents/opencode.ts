@@ -110,7 +110,13 @@ function buildSecurityConfig(ctx: AgentRunContext, model: string | undefined): s
       skill: "allow",
     },
     mcp: {
-      [pullfrogMcpName]: { type: "remote", url: ctx.mcpServerUrl },
+      // 300s tool timeout (vs the MCP SDK's 60s default). `checkout_pr` runs a
+      // multi-minute `git fetch` on large repos (remotion); a 60s client abort
+      // surfaces as `MCP error -32001` and used to push the agent toward
+      // deleting live git locks (the corruption in #860/#864 — the dangerous
+      // `rm` guidance is gone, but the spurious aborts shouldn't happen either).
+      // server-side cap is 600s (`checkout_pr` `timeoutMs`).
+      [pullfrogMcpName]: { type: "remote", url: ctx.mcpServerUrl, timeout: 300_000 },
     },
     agent: (() => {
       const cfg = buildReviewerAgentConfig(model);

@@ -62,11 +62,12 @@ export async function persistRunArtifacts(toolContext: ToolContext): Promise<voi
  *      prepended below in step 4) — same classifier as the catch path so
  *      the user sees it instead of a deleted-comment void / empty summary
  *      tab
- *   3. when the run succeeded and the progress comment was never finalized
- *      via `report_progress`, delete it (three sub-cases — orphan
- *      "Leaping into action" comment, abandoned checklist, agent wrote
- *      a substantive artifact via another MCP write tool but skipped
- *      report_progress)
+ *   3. when the run succeeded, some write landed (`wasUpdated`), but the
+ *      progress comment was never finalized via `report_progress`, delete
+ *      the stranded comment (abandoned checklist, or a substantive artifact
+ *      written via another MCP write tool that skipped report_progress). a
+ *      run where NO write landed keeps its comment for handleAgentResult to
+ *      salvage into — see the `wasUpdated` guard below and #868
  *   4. write the GitHub Actions step summary (best-effort — a write
  *      failure must not throw past this point because we'd hit the outer
  *      catch and clobber any progress comment we just wrote)
@@ -117,9 +118,17 @@ export async function finalizeSuccessRun(input: {
   // uses finalSummaryWritten (not todoTracker.enabled or wasUpdated) so
   // cleanup survives API failures in report_progress where cancel() ran but
   // the write didn't succeed, and isn't fooled by writes to *other* artifacts.
+  //
+  // the extra `wasUpdated` guard preserves the comment when NO write landed at
+  // all: that's the case handleAgentResult salvages (raw-text answer / failed
+  // report_progress) by writing the agent's result into this very comment, or
+  // — when there's nothing to salvage — reports the failure into it. deleting
+  // here would strand the user with a vanished "Leaping into action" comment
+  // and a no-op error report (see #868).
   if (
     input.result.success &&
     input.toolState.progressComment &&
+    input.toolState.wasUpdated &&
     !input.toolState.finalSummaryWritten
   ) {
     await deleteProgressComment(input.toolContext).catch((error) => {

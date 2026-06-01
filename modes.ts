@@ -590,7 +590,7 @@ ${PR_SUMMARY_FORMAT}`,
 
 1. **task list**: create your task list for this run as your first action.
 
-2. Analyze the task. For simple operations (labeling, commenting, answering questions, running a single command), handle directly.
+2. Analyze the task. For simple operations (labeling, commenting, answering questions, running a single command), handle directly — but your answer only reaches the user through \`${t("report_progress")}\` (step 4); raw assistant text is discarded.
 
 3. For substantial work — code changes across multiple files, multi-step investigations:
    - plan your approach before starting

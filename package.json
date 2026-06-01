@@ -51,7 +51,7 @@
     "fastmcp": "^3.34.0",
     "file-type": "^21.3.0",
     "husky": "^9.0.0",
-    "opencode-ai": "1.15.1",
+    "opencode-ai": "1.15.13",
     "package-manager-detector": "^1.6.0",
     "picocolors": "^1.1.1",
     "semver": "^7.7.3",
