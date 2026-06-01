@@ -41,6 +41,14 @@ export {
   PULLFROG_DIVIDER,
   stripExistingFooter,
 } from "../utils/buildPullfrogFooter.ts";
+export type { CodexAuthBody } from "../utils/codexOAuth.ts";
+export {
+  decodeJwtExpMs,
+  OAuthInvalidGrantError,
+  parseCodexAuthBody,
+  refreshCodexAuthBody,
+  stringifyCodexAuthBody,
+} from "../utils/codexOAuth.ts";
 export type { ResourceUsage, UsageSummary } from "../utils/github.ts";
 export {
   isLeapingIntoActionCommentBody,

@@ -11,46 +11,60 @@
 // At runtime, `CODEX_AUTH_JSON` lands in process.env via `runContext.dbSecrets`
 // merged in main.ts — sourced from Pullfrog Postgres through the OIDC-validated
 // run-context endpoint, never from `${{ secrets.CODEX_AUTH_JSON }}` in
-// workflow yaml. This utility:
+// workflow yaml.
 //
-//   1. parses + validates that env value
-//   2. converts Codex's shape `{ auth_mode, tokens: { access_token, refresh_token, ... } }`
-//      into OpenCode's shape `{ openai: { type: "oauth", refresh, access, expires, accountId } }`
-//   3. materializes it to disk at the runner's REAL `$HOME/.local/share/opencode/auth.json`
-//      (NOT the per-run tmpdir's HOME)
-//   4. returns the path + the original refresh token so the post-run hook
-//      can detect a refresh and write back to Pullfrog
+// The run-context endpoint calls `maybeRotateCodexSecret` (see
+// `utils/codexSecretRotation.ts`) inside a Postgres row lock just before
+// decrypting + returning dbSecrets. That serializes concurrent rotations
+// across the fleet: the first concurrent run rotates the token; the rest
+// see the just-written value and skip. Result: the token in
+// `process.env.CODEX_AUTH_JSON` is guaranteed fresh for at least the
+// rotation safety margin (~50min) when this code runs. No action-side
+// pre-flight refresh is needed.
 //
-// Why real $HOME and not ctx.tmpdir-redirected HOME: the broad
-// `external_directory: { "/tmp/*": "allow" }` rule on OpenCode would expose
-// auth.json to the agent's filesystem tools if the file lived under
-// `ctx.tmpdir` = `/tmp/pullfrog-*`. Real `$HOME/.local/share/opencode/...`
-// falls outside that allow zone, so OpenCode's deny-default protects it
-// without any new permission rules.
+// This utility then:
+//   1. parses + validates the env value
+//   2. decodes the access_token JWT's `exp` claim so opencode knows how
+//      long to trust the token before its CodexAuthPlugin attempts its
+//      own mid-run refresh
+//   3. converts Codex's shape `{ auth_mode, tokens: { access_token,
+//      refresh_token, id_token?, account_id? } }` into OpenCode's shape
+//      `{ openai: { type: "oauth", refresh, access, expires, accountId } }`
+//   4. materializes it to disk under a path the MCP-shell mount-namespace
+//      sandbox can hide from bash: `/var/lib/pullfrog/opencode/auth.json` in
+//      CI (sudo-bootstrapped, fail-closed if sudo unavailable),
+//      `$HOME/.local/share/opencode/auth.json` locally (sandbox is no-op
+//      locally so the path is irrelevant to security)
+//   5. returns the path + the original refresh token so the post-run hook
+//      can detect a mid-run rotation and write back to Pullfrog
 //
-// `expires: 0` forces OpenCode to refresh on first request (we don't trust
-// the in-blob freshness — the saved token was eager-refreshed once at
-// `auth codex` time but may have aged since).
+// Why `/var/lib/pullfrog/` and not `$HOME` in CI: bash via MCP runs inside a
+// mount namespace that overlays tmpfs on `/var/lib/pullfrog/` (see FS_MOUNTS
+// in action/mcp/shell.ts), so bash sees an empty dir while opencode's
+// internal auth module — which runs in the agent process outside that
+// namespace — reads/writes the real file. `$HOME` can't be tmpfs-overlaid
+// without breaking the agent's legitimate need to access ~/.npm, ~/.cache,
+// etc.
 //
 // See [wiki/codex-auth.md] for the full data-flow picture.
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { log } from "./cli.ts";
+import { decodeJwtExpMs, parseCodexAuthBody } from "./codexOAuth.ts";
 
 const CODEX_AUTH_ENV = "CODEX_AUTH_JSON";
 
-interface CodexAuthBlob {
-  auth_mode: "chatgpt";
-  tokens: {
-    access_token: string;
-    refresh_token: string;
-    id_token?: string;
-    account_id?: string;
-  };
-  last_refresh?: string;
-}
+/** sandbox-hidden home for pullfrog-managed on-disk secrets in CI. bash via
+ * MCP shell tmpfs-overlays this path; opencode's internal auth module
+ * bypasses external_directory and reaches the real file. mirrors the
+ * pattern in action/agents/claude.ts installManagedSettings.
+ *
+ * not used for codex auth in local dev — the sandbox is no-op there, so
+ * the path doesn't matter. local dev keeps the existing $HOME path. */
+export const PULLFROG_DATA_DIR = "/var/lib/pullfrog";
 
 interface OpenCodeAuthFile {
   openai: {
@@ -68,39 +82,47 @@ export interface InstalledCodexAuth {
   authPath: string;
   /** value to set as XDG_DATA_HOME for the OpenCode subprocess. */
   xdgDataHome: string;
-  /** refresh_token from the env at materialization time. post-hook compares
-   * against the on-disk file after the run to detect whether OpenCode
-   * refreshed during the session. */
+  /** refresh_token from the env at materialization time. post-hook
+   * compares against the on-disk file after the run to detect whether
+   * OpenCode refreshed during the session (only happens on long runs
+   * that span >50min — see wiki/codex-auth.md "Concurrency"). */
   originalRefresh: string;
 }
 
 /** materialize CODEX_AUTH_JSON from env into a disk path OpenCode reads from.
  * returns null when the env var is absent, malformed, or wrong auth mode —
- * caller treats null as "no codex auth, fall through to API key flow". */
+ * caller treats null as "no codex auth, fall through to API key flow".
+ *
+ * The env value is server-side guaranteed fresh by `maybeRotateCodexSecret`
+ * in the run-context endpoint. We only parse + write it here; no refresh,
+ * no DB interaction. */
 export function installCodexAuth(): InstalledCodexAuth | null {
   const raw = process.env[CODEX_AUTH_ENV];
   if (!raw) return null;
 
-  const blob = parseCodexBlob(raw);
-  if (!blob) {
+  const body = parseCodexAuthBody(raw);
+  if (!body) {
     log.warning(`» ${CODEX_AUTH_ENV} present but malformed; ignoring`);
     return null;
   }
 
-  const xdgDataHome = join(homedir(), ".local", "share");
+  // decode the access_token's JWT exp so opencode trusts the token until
+  // its real expiry (no need to refresh on first request). null exp ->
+  // fall back to "expires: 0" so opencode refreshes immediately on first
+  // request (the old behavior).
+  const expiresMs = decodeJwtExpMs(body.tokens.access_token) ?? 0;
+
+  const xdgDataHome = resolveDataHome();
   const opencodeDir = join(xdgDataHome, "opencode");
   const authPath = join(opencodeDir, "auth.json");
 
   const opencodeAuth: OpenCodeAuthFile = {
     openai: {
       type: "oauth",
-      refresh: blob.tokens.refresh_token,
-      access: blob.tokens.access_token,
-      // expires: 0 forces OpenCode's CodexAuthPlugin to refresh on first
-      // request (it checks `expires < Date.now()`). safest default — we
-      // don't carry an `expires_in` from the Codex blob.
-      expires: 0,
-      ...(blob.tokens.account_id ? { accountId: blob.tokens.account_id } : {}),
+      refresh: body.tokens.refresh_token,
+      access: body.tokens.access_token,
+      expires: expiresMs,
+      ...(body.tokens.account_id ? { accountId: body.tokens.account_id } : {}),
     },
   };
 
@@ -109,32 +131,63 @@ export function installCodexAuth(): InstalledCodexAuth | null {
 
   log.info(`» installed Codex auth at ${authPath}`);
 
-  return { authPath, xdgDataHome, originalRefresh: blob.tokens.refresh_token };
+  return {
+    authPath,
+    xdgDataHome,
+    originalRefresh: body.tokens.refresh_token,
+  };
 }
 
-function parseCodexBlob(raw: string): CodexAuthBlob | null {
-  let parsed: unknown;
+/** pick the XDG_DATA_HOME for codex auth.
+ *
+ * - **local dev (CI != true)**: use $HOME. mount-namespace sandbox is no-op
+ *   locally so the file isn't protected from bash either way; codex auth on
+ *   a developer's machine is the developer's responsibility.
+ * - **CI**: bootstrap /var/lib/pullfrog via sudo. MCP shell's mount namespace
+ *   tmpfs-overlays this path, and claude managed-settings + opencode
+ *   external_directory both deny it — three independent layers.
+ *
+ * **fail closed in CI** when the sudo bootstrap fails. falling back to
+ * $HOME silently strips two of the three protection layers — the wiki
+ * claims three layers; degrading to one without a hard error contradicts
+ * that claim and is exactly the kind of silent security regression the
+ * reviewer should never have to catch. operators on locked-down runners
+ * that can't passwordless-sudo should re-provision sudo or remove
+ * `CODEX_AUTH_JSON` from the run entirely. */
+function resolveDataHome(): string {
+  if (process.env.CI !== "true") return join(homedir(), ".local", "share");
+  bootstrapPullfrogDataDir();
+  return PULLFROG_DATA_DIR;
+}
+
+function bootstrapPullfrogDataDir(): void {
+  const user = userInfo().username;
+  // `id -gn $user` resolves the user's primary group name correctly even on
+  // self-hosted images where the group isn't `<user>:<user>` (e.g., `runner`
+  // belongs to `runner`, but a self-hosted setup might use `users`, `docker`,
+  // or a project-specific gid). avoids the brittle "group has same name as
+  // user" assumption.
+  let primaryGroup: string;
   try {
-    parsed = JSON.parse(raw);
+    primaryGroup = execFileSync("id", ["-gn", user], { stdio: "pipe", encoding: "utf-8" }).trim();
   } catch {
-    return null;
+    primaryGroup = user;
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const v = parsed as Record<string, unknown>;
-  if (v.auth_mode !== "chatgpt") return null;
-  const tokens = v.tokens;
-  if (!tokens || typeof tokens !== "object") return null;
-  const t = tokens as Record<string, unknown>;
-  if (typeof t.access_token !== "string" || t.access_token.length === 0) return null;
-  if (typeof t.refresh_token !== "string" || t.refresh_token.length === 0) return null;
-  return {
-    auth_mode: "chatgpt",
-    tokens: {
-      access_token: t.access_token,
-      refresh_token: t.refresh_token,
-      ...(typeof t.id_token === "string" ? { id_token: t.id_token } : {}),
-      ...(typeof t.account_id === "string" ? { account_id: t.account_id } : {}),
-    },
-    ...(typeof v.last_refresh === "string" ? { last_refresh: v.last_refresh } : {}),
-  };
+  // `-n` (non-interactive) makes sudo fail-fast on locked-down runners
+  // instead of prompting and timing out.
+  try {
+    execFileSync("sudo", ["-n", "mkdir", "-p", PULLFROG_DATA_DIR], { stdio: "pipe" });
+    execFileSync("sudo", ["-n", "chown", `${user}:${primaryGroup}`, PULLFROG_DATA_DIR], {
+      stdio: "pipe",
+    });
+    execFileSync("sudo", ["-n", "chmod", "700", PULLFROG_DATA_DIR], { stdio: "pipe" });
+  } catch (err) {
+    throw new Error(
+      `failed to bootstrap ${PULLFROG_DATA_DIR} (required for codex auth in CI): ${err instanceof Error ? err.message : String(err)}. ` +
+        `the MCP shell's mount-namespace sandbox cannot protect the auth file when it lives under $HOME, ` +
+        `and silently falling back would contradict the "three independent layers" claim in wiki/codex-auth.md. ` +
+        `passwordless sudo is required for codex auth on this runner — either configure it, or remove ` +
+        `CODEX_AUTH_JSON from the run.`
+    );
+  }
 }

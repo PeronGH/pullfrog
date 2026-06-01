@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type CodexAuthBody, refreshCodexAuthBody, stringifyCodexAuthBody } from "./codexOAuth.ts";
 
 /**
  * minted Codex subscription credential. raw `auth.json` body that Codex CLI /
@@ -16,62 +17,16 @@ export interface CodexAuth {
   parsed: CodexAuthJson;
 }
 
-export interface CodexAuthJson {
-  auth_mode: "chatgpt";
-  tokens: {
-    access_token: string;
-    id_token?: string;
-    refresh_token: string;
-    account_id?: string;
-  };
-  last_refresh?: string;
-}
-
-/** OAuth client id Codex CLI and OpenCode both use against `auth.openai.com`.
- * Same chain — a refresh token minted via `codex login --device-auth` can be
- * refreshed against this client_id. */
-const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
-
-interface OAuthTokenResponse {
-  access_token: string;
-  refresh_token: string;
-  id_token?: string;
-  expires_in?: number;
-}
+export type CodexAuthJson = CodexAuthBody;
 
 /** force one refresh round-trip against the OAuth provider so the saved
  * credential carries the freshest refresh token. used right after `codex
  * login --device-auth` and again any time we want to bump the chain before
- * persisting (avoids the user's laptop refreshing first and burning ours). */
+ * persisting (avoids the user's laptop refreshing first and burning ours).
+ * Server-side rotation at run-context uses `refreshCodexAuthBody` directly. */
 export async function refreshCodexAuth(auth: CodexAuth): Promise<CodexAuth> {
-  const response = await fetch(CODEX_OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: auth.parsed.tokens.refresh_token,
-      client_id: CODEX_OAUTH_CLIENT_ID,
-    }).toString(),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Codex token refresh failed: ${response.status} ${body}`);
-  }
-  const tokens = (await response.json()) as OAuthTokenResponse;
-  const idToken = tokens.id_token ?? auth.parsed.tokens.id_token;
-  const accountId = auth.parsed.tokens.account_id;
-  const refreshed: CodexAuthJson = {
-    auth_mode: "chatgpt",
-    tokens: {
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      ...(idToken ? { id_token: idToken } : {}),
-      ...(accountId ? { account_id: accountId } : {}),
-    },
-    last_refresh: new Date().toISOString(),
-  };
-  return { json: `${JSON.stringify(refreshed, null, 2)}\n`, parsed: refreshed };
+  const refreshed = await refreshCodexAuthBody(auth.parsed);
+  return { json: stringifyCodexAuthBody(refreshed), parsed: refreshed };
 }
 
 export type ProgressEvent =

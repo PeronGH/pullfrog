@@ -1184,9 +1184,23 @@ export const opencode = agent({
     // OPENCODE_PERMISSION has absolute highest precedence (merged after managed/MDM configs).
     // external_directory gates ALL native filesystem tools (Read, Write, Edit, Glob, Grep, etc.)
     // for paths outside the project root. last-match-wins: deny everything, then allow /tmp.
-    // auth.json sits under real $HOME (outside /tmp/*), so deny-default protects it.
+    // codex auth lives at /var/lib/pullfrog/opencode/auth.json (see codexHome.ts),
+    // which is outside /tmp/* — deny-default protects it from native FS tools.
+    //
+    // edit rule denies git config / hooks / attributes — these live INSIDE the
+    // project root (so external_directory doesn't gate them), but the per-tool
+    // `edit` permission supports last-match-wins Wildcard.match against
+    // worktree-relative paths (see /tmp/opencode/packages/core/src/permission.ts).
+    // covers edit/write/apply_patch via EDIT_TOOLS normalization. mirrors the
+    // FS_MOUNTS read-only protection on the same paths in action/mcp/shell.ts.
     const permissionOverride = JSON.stringify({
       external_directory: { "*": "deny", "/tmp/*": "allow" },
+      edit: {
+        "*": "allow",
+        ".git/config": "deny",
+        ".git/hooks/*": "deny",
+        ".git/info/attributes": "deny",
+      },
     });
 
     const env: Record<string, string | undefined> = {

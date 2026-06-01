@@ -20,7 +20,7 @@ import { validateAgentApiKey } from "./utils/apiKeys.ts";
 import { resolveBody } from "./utils/body.ts";
 import { selectFallbackModelIfNeeded } from "./utils/byokFallback.ts";
 import { log } from "./utils/cli.ts";
-import { installCodexAuth } from "./utils/codexHome.ts";
+import { installCodexAuth, PULLFROG_DATA_DIR } from "./utils/codexHome.ts";
 import { recordDiffReadFromToolUse } from "./utils/diffCoverage.ts";
 import { onExitSignal } from "./utils/exitHandler.ts";
 import { resolveGit, setGitAuthServer } from "./utils/gitAuth.ts";
@@ -555,7 +555,14 @@ export async function main(): Promise<MainResult> {
       resolvedModel,
       mcpServerUrl: mcpHttpServer.url,
       tmpdir,
-      secretDenyPaths: vertexCredentials ? [vertexCredentials.secretDir] : [],
+      // PULLFROG_DATA_DIR (/var/lib/pullfrog) holds codex auth.json + any
+      // future pullfrog-managed on-disk secrets. bash via MCP tmpfs-overlays
+      // it; agent native FS tools deny it via the same secretDenyPaths plumbing
+      // used for vertex creds. see wiki/security.md "Filesystem Sandbox".
+      secretDenyPaths: [
+        PULLFROG_DATA_DIR,
+        ...(vertexCredentials ? [vertexCredentials.secretDir] : []),
+      ],
       instructions,
       todoTracker,
       stopScript: runContext.repoSettings.stopScript,

@@ -117,6 +117,117 @@ const SOCKET_CLEANUP = [
   .map((path) => `mount --bind /dev/null ${path} 2>/dev/null;`)
   .join(" ");
 
+// extend the mount-namespace isolation that PROC_CLEANUP and SOCKET_CLEANUP
+// already establish. these mounts hide pullfrog-managed on-disk secrets,
+// block env-injection into subsequent workflow steps, and make git's
+// code-execution config read-only inside the bash subprocess.
+//
+//   1. tmpfs over /var/lib/pullfrog/ — codex auth.json and any future
+//      pullfrog-managed on-disk secret live here (see action/utils/codexHome.ts
+//      PULLFROG_DATA_DIR). opencode's internal auth module runs in the agent
+//      process outside this namespace and reads the real file via bypass of
+//      external_directory; bash sees an empty tmpfs. mkdir -p the path
+//      first so the tmpfs always engages — without that, runs without
+//      CODEX_AUTH_JSON wouldn't have bootstrapped the dir, the mountpoint
+//      wouldn't exist, and `mount -t tmpfs` would silent-fail. precreate
+//      keeps the overlay active for any future on-disk secret that lands
+//      under /var/lib/pullfrog regardless of which install path created it.
+//   2. tmpfs over $RUNNER_TEMP/_runner_file_commands/ — anything bash writes
+//      to $GITHUB_ENV / $GITHUB_PATH / $GITHUB_OUTPUT / $GITHUB_STATE lands in
+//      a per-namespace tmpfs that the GHA runner never sees. our own action
+//      process writes core.setOutput / core.saveState outside the namespace,
+//      so legitimate outputs are unaffected. requires RUNNER_TEMP to be set.
+//   3. self-bind + remount-ro on .git/config, .git/hooks (dir), and
+//      .git/info/attributes (specific file, pre-created from the action
+//      process via ensureGitAttributesFile so the bind always succeeds).
+//      We bind .git/info/attributes specifically instead of the whole
+//      .git/info/ directory so .git/info/exclude — a legitimate per-repo
+//      ignore file that some workflows edit — remains writable.
+//      Prevents agent-planted git filters / hooks from firing in downstream
+//      workflow steps (the threat survives ASKPASS because hooks fire after
+//      auth and our $git() uses -c core.hooksPath to override its own hooks,
+//      but downstream `git` invocations in later steps DON'T get that
+//      protection — see wiki/security.md "Filesystem Sandbox"). Does not
+//      cover `~/.gitconfig` or `/etc/gitconfig` — see "Scope and Limitations"
+//      in wiki/security.md for the rationale.
+//
+// these mounts run as root inside the namespace (before `exec su -p` drops
+// to runner). after the drop, runner has no CAP_SYS_ADMIN in the host, so
+// can't undo from outside. intra-namespace sudo undo is theoretically
+// possible — same risk profile as SOCKET_CLEANUP, accepted per wiki/security.md
+// "why sudo inside sandbox doesn't break security".
+//
+// in the unprivileged-unshare path (Docker --privileged test environments),
+// the user retains CAP_SYS_ADMIN inside the user namespace and could
+// `umount` these. production uses sudo-unshare where the drop seals them.
+//
+// repoDir is interpolated by the action process from resolveRepoRoot() —
+// NOT $PWD — because spawnShell's cwd is agent-controllable via
+// `working_directory` AND the action's process.cwd() may have been chdir'd
+// to payload.cwd (monorepo subdir support in main.ts). using either would
+// let the agent bypass the .git/* binds. resolveRepoRoot pins the actual
+// repo root once at startup via $GITHUB_WORKSPACE or `git rev-parse`.
+function buildFsMounts(repoDir: string): string {
+  // shell-escape via single-quote wrap; bash interprets \' as the escape
+  // for a single quote inside a single-quoted string by closing-and-reopening.
+  // repoDir paths in practice are GHA workspace paths (no quotes), but the
+  // escape keeps us correct against arbitrary user-configured workspaces.
+  const escaped = repoDir.replace(/'/g, "'\\''");
+  return [
+    `mkdir -p /var/lib/pullfrog 2>/dev/null;`,
+    `mount -t tmpfs tmpfs /var/lib/pullfrog 2>/dev/null;`,
+    `[ -n "$RUNNER_TEMP" ] && [ -d "$RUNNER_TEMP/_runner_file_commands" ] && mount -t tmpfs tmpfs "$RUNNER_TEMP/_runner_file_commands" 2>/dev/null;`,
+    `for path in '${escaped}/.git/config' '${escaped}/.git/hooks' '${escaped}/.git/info/attributes'; do [ -e "$path" ] || continue; mount --bind "$path" "$path" 2>/dev/null && mount -o remount,bind,ro "$path" 2>/dev/null; done;`,
+  ].join(" ");
+}
+
+/** locate the repo root once at action startup. process.cwd() is unreliable
+ * because main.ts may `process.chdir(payload.cwd)` for monorepo subdirs;
+ * the agent's `working_directory` shell param also moves spawn cwd. we need
+ * the actual git working tree root for the .git/* binds. memoized for the
+ * lifetime of the action process. */
+let _repoRoot: string | undefined;
+function resolveRepoRoot(): string {
+  if (_repoRoot) return _repoRoot;
+  const fromEnv = process.env.GITHUB_WORKSPACE;
+  if (fromEnv) {
+    _repoRoot = fromEnv;
+    return _repoRoot;
+  }
+  // fallback: `git rev-parse --show-toplevel` from process.cwd(). only used
+  // outside GHA (local dev, custom runners). swallow errors and fall back
+  // to process.cwd() so we never throw from the shell-tool init path.
+  try {
+    _repoRoot = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf-8",
+    }).stdout?.trim();
+  } catch {
+    // intentionally empty — fall through to process.cwd()
+  }
+  if (!_repoRoot) _repoRoot = process.cwd();
+  return _repoRoot;
+}
+
+/** ensure .git/info/attributes exists so the FS_MOUNTS bind always succeeds.
+ * pre-creating an empty file from the action process means the agent can't
+ * slip in a pre-bind write that gets ro-locked-in. idempotent — `flag: "a"`
+ * preserves any existing content. */
+let _gitAttributesEnsured = false;
+function ensureGitAttributesFile(repoRoot: string): void {
+  if (_gitAttributesEnsured) return;
+  _gitAttributesEnsured = true;
+  const attrPath = join(repoRoot, ".git", "info", "attributes");
+  try {
+    // .git/info/ exists in any git repo; no need to mkdir it
+    writeFileSync(attrPath, "", { flag: "a" });
+  } catch {
+    // not a git repo / no write perms / no .git/info — the bind in
+    // FS_MOUNTS will skip via [ -e ] guard, harmless
+  }
+}
+
 function spawnShell(params: SpawnParams): ChildProcess {
   const spawnOpts = { env: params.env, cwd: params.cwd, stdio: params.stdio, detached: true };
   const sandboxMethod = detectSandboxMethod();
@@ -128,6 +239,14 @@ function spawnShell(params: SpawnParams): ChildProcess {
     );
   }
 
+  // resolve the actual git repo root (NOT params.cwd which is
+  // agent-controllable via `working_directory`, NOT process.cwd() which may
+  // have been chdir'd to payload.cwd in main.ts). resolveRepoRoot prefers
+  // $GITHUB_WORKSPACE in CI and falls back to `git rev-parse`.
+  const repoRoot = resolveRepoRoot();
+  ensureGitAttributesFile(repoRoot);
+  const fsMounts = buildFsMounts(repoRoot);
+
   if (sandboxMethod === "unshare") {
     return spawn(
       "unshare",
@@ -137,7 +256,7 @@ function spawnShell(params: SpawnParams): ChildProcess {
         "--mount-proc",
         "bash",
         "-c",
-        `${PROC_CLEANUP} ${SOCKET_CLEANUP} ${params.command}`,
+        `${PROC_CLEANUP} ${SOCKET_CLEANUP} ${fsMounts} ${params.command}`,
       ],
       spawnOpts
     );
@@ -150,9 +269,10 @@ function spawnShell(params: SpawnParams): ChildProcess {
         envArgs.push(`${k}=${v}`);
       }
     }
-    // drop back to original user after PROC_CLEANUP so files aren't owned by root.
-    // sudo is only needed for unshare; the actual command should run as the normal user
-    // to avoid ownership mismatches with files created by the Node.js parent process.
+    // drop back to original user after PROC_CLEANUP / FS_MOUNTS so files aren't
+    // owned by root. sudo is only needed for unshare + the mount setup; the
+    // actual command should run as the normal user to avoid ownership
+    // mismatches with files created by the Node.js parent process.
     const username = userInfo().username;
     // su -p resets PATH on many Linux systems (ALWAYS_SET_PATH in /etc/login.defs).
     // restore it from the SANDBOX_PATH env var that survives the su transition.
@@ -171,7 +291,7 @@ function spawnShell(params: SpawnParams): ChildProcess {
         "--mount-proc",
         "bash",
         "-c",
-        `${PROC_CLEANUP} ${SOCKET_CLEANUP} exec su -p -s /bin/bash ${username} -c '${escaped}'`,
+        `${PROC_CLEANUP} ${SOCKET_CLEANUP} ${fsMounts} exec su -p -s /bin/bash ${username} -c '${escaped}'`,
       ],
       { ...spawnOpts, env: {} }
     );

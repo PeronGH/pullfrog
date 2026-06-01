@@ -815,18 +815,15 @@ const MANAGED_SETTINGS_PATH = `${MANAGED_SETTINGS_DIR}/managed-settings.json`;
 // managed-settings.json has absolute highest precedence in Claude Code's config hierarchy.
 // it cannot be overridden by user, project, or local settings — safe against malicious PRs.
 //
-// permissions.deny blocks native tools (Read, Grep, Edit, Glob) from accessing /proc and /sys.
+// permissions.deny blocks native tools (Read, Grep, Edit, Glob) from accessing /proc and /sys,
+// plus any path passed in via ctx.secretDenyPaths (codex auth dir, vertex creds dir, etc.).
 // sandbox.filesystem.denyRead blocks the Bash tool sandbox from reading those paths.
 // allowManagedPermissionRulesOnly prevents malicious PRs from adding allow rules that override
 // our deny rules — safe in CI because --dangerously-skip-permissions makes allow/ask irrelevant.
 // allowManagedHooksOnly prevents malicious project hooks from bypassing deny rules.
-// Codex auth.json (Pullfrog-stored ChatGPT subscription credential) lives at
-// `~/.local/share/opencode/auth.json` when the opencode harness materialized
-// it. Claude shouldn't be running OpenAI models — they route to opencode —
-// but defense-in-depth: deny the file regardless. Per Claude Code permissions
-// docs, Read(...) deny ALSO blocks file-reading Bash commands (cat, head,
-// tail, sed) and survives bypassPermissions mode. See wiki/codex-auth.md.
-const CODEX_AUTH_DENY_PATH = "~/.local/share/opencode/auth.json";
+// Per Claude Code permissions docs, Read(...) deny ALSO blocks file-reading Bash commands
+// (cat, head, tail, sed) and survives bypassPermissions mode. See wiki/security.md and
+// wiki/codex-auth.md.
 
 /**
  * env var carrying the gate-server URL to the Claude subprocess. the Stop
@@ -898,16 +895,12 @@ function buildManagedSettings(params: ManagedSettingsParams): Record<string, unk
         "Edit(//sys/**)",
         "Glob(//proc/**)",
         "Glob(//sys/**)",
-        `Read(${CODEX_AUTH_DENY_PATH})`,
-        `Grep(${CODEX_AUTH_DENY_PATH})`,
-        `Edit(${CODEX_AUTH_DENY_PATH})`,
-        `Glob(${CODEX_AUTH_DENY_PATH})`,
         ...toolDeny,
       ],
     },
     sandbox: {
       filesystem: {
-        denyRead: ["/proc", "/sys", CODEX_AUTH_DENY_PATH, ...secretDenyPaths],
+        denyRead: ["/proc", "/sys", ...secretDenyPaths],
       },
     },
   };

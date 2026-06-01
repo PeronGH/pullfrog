@@ -940,12 +940,22 @@ export const opencode = agent({
     // action/utils/codexHome.ts and wiki/codex-auth.md.
     const codexAuth = installCodexAuth();
 
-    // OPENCODE_PERMISSION (highest precedence). external_directory gates all
-    // native filesystem tools for paths outside the project root. deny
-    // everything, then allow /tmp — auth.json sits under real $HOME so the
-    // deny-default protects it.
+    // OPENCODE_PERMISSION has absolute highest precedence (merged after managed/MDM configs).
+    // external_directory gates ALL native filesystem tools (Read, Write, Edit, Glob, Grep, etc.)
+    // for paths outside the project root. last-match-wins: deny everything, then allow /tmp.
+    // codex auth lives at /var/lib/pullfrog/opencode/auth.json in CI (see codexHome.ts),
+    // which is outside /tmp/* — deny-default protects it from native FS tools.
+    //
+    // edit rule denies git config / hooks / attributes inside the project
+    // root (see opencode.ts for the same shape and rationale).
     const permissionOverride = JSON.stringify({
       external_directory: { "*": "deny", "/tmp/*": "allow" },
+      edit: {
+        "*": "allow",
+        ".git/config": "deny",
+        ".git/hooks/*": "deny",
+        ".git/info/attributes": "deny",
+      },
     });
 
     const repoDir = process.cwd();
