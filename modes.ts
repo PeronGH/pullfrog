@@ -208,9 +208,11 @@ export function computeModes(agentId: AgentId): Mode[] {
    This is a PRE-COMMIT Build-mode self-review. The work to review lives in the working tree (uncommitted), NOT in committed history.
 
    Branch: <branch> (off <base>)
-   Canonical diff command: git diff origin/<base>
+   Canonical diff command: git diff --merge-base origin/<base>
 
-   If that command returns empty, treat it as "no changes — nothing to review" and stop per your system prompt. Do not search for the work elsewhere.
+   Use \`--merge-base\` (single MCP \`git\` call, no shell substitution required). NOT bare \`git diff origin/<base>\` or two-dot \`git diff origin/<base>..HEAD\` — the symmetric forms include the inverse of every commit landed on \`<base>\` since this branch forked, which is noise (and the git tool will reject those forms when the divergence is detected). \`origin/<base>...HEAD\` (three-dot) and \`--cached\` both miss the uncommitted edits self-review runs on, so they're also wrong here.
+
+   If the merge-base diff returns empty, treat it as "no changes — nothing to review" and stop per your system prompt. Do not search for the work elsewhere.
 
    ## Your task
    <YOUR TASK content>
@@ -219,7 +221,7 @@ export function computeModes(agentId: AgentId): Mode[] {
    <tight summary — what broke, root cause, the fix — or "no build-phase failures">
    \`\`\`
 
-   Follow the template with the diff content (\`git diff origin/<base-branch>\`, single-rev form — \`main...HEAD\` and \`--cached\` both miss the uncommitted edits self-review runs on) and your task brief. Instruct the subagent to flag bugs, logic errors, missing edge cases, gaps between request and diff, and unintended changes.
+   Follow the template with the diff content (\`git diff --merge-base origin/<base-branch>\` — single MCP \`git\` call, captures committed + staged + unstaged, excludes base-branch progress) and your task brief. Instruct the subagent to flag bugs, logic errors, missing edge cases, gaps between request and diff, and unintended changes.
 
    Delegation + research discipline (distilled from \`/anneal\` canonical — these are codified learnings from many review rounds, not theoretical best practices):
    - Do NOT summarize what you implemented — that biases the subagent toward validating the shape of your solution rather than questioning it.
@@ -363,7 +365,7 @@ For simple, well-defined tasks, skip the plan phase and go straight to build.`,
    You can also include your own \`read\` / \`grep\` / \`webfetch\` calls in the SAME turn as the parallel \`${REVIEWER_AGENT_NAME}\` dispatches — concurrent context-pulling on the orchestrator side runs in parallel with the lens fan-out and costs zero extra wall time.
 
    if a subagent errors out, times out, or returns nothing usable, retry once with the same lens; if it still fails, proceed with partial coverage and note the missing lens in the review body — do not skip the fan-out entirely on a single subagent failure. each subagent gets:
-   - the absolute \`diffPath\` from step 2's \`${t("checkout_pr")}\` return, named verbatim in the dispatch (e.g. \`diffPath: /tmp/pullfrog-XXXX/pr-NNN-SHA.diff\`). the reviewer's baked-in system prompt selects its FIRST action on this token — paraphrasing ("review the diff", "look at this PR") sends it down the \`git diff origin/<base>\` fallback, which fails on shallow GHA checkouts.
+   - **the absolute \`diffPath\` (and \`incrementalDiffPath\` if available) from step 2's \`${t("checkout_pr")}\` return, named verbatim in the dispatch prompt** (e.g. \`diffPath: /tmp/pullfrog-XXXX/pr-NNN-SHA.diff\`). the reviewer's baked-in system prompt selects its FIRST action on this token — paraphrasing ("review the diff", "look at this PR") sends it down the \`git diff origin/<base>\` fallback, which fails on shallow GHA checkouts. the subagent \`read\`s those files for scope; it must NOT re-derive the diff via \`git diff\` (bare \`git diff origin/<base>\` is symmetric and pulls in the inverse of any commits that landed on \`<base>\` since the branch forked — pure noise, and the git tool rejects it). reading and codebase exploration are still its job.
    - **only one lens** — never a multi-section "review for X, Y, and Z" prompt
    - **a Task \`description\` set to the lens name** (e.g. \`"security"\`, \`"correctness"\`, \`"billing-subsystem"\`) — the harness reads this field to label the subagent's log lines so parallel runs can be told apart in CI output. without it, every subagent shows up as \`subagent#N\`.
    - if the lens touches external contracts, instruct the subagent to verify load-bearing claims via web search rather than trust training data, and to quote source URLs in its reasoning. action runs are non-interactive — there's no human in the loop to catch "I'm pretty sure Stripe does X."
@@ -474,7 +476,7 @@ ${PR_SUMMARY_FORMAT}`,
    You can also include your own \`read\` / \`grep\` / \`webfetch\` calls in the SAME turn as the parallel \`${REVIEWER_AGENT_NAME}\` dispatches.
 
    if a subagent errors out, times out, or returns nothing usable, retry once with the same lens; if it still fails, proceed with partial coverage and note the missing lens in the review body. each subagent gets:
-   - the absolute diff path(s) from step 2, named verbatim. when \`incrementalDiffPath\` is present, name BOTH (\`incrementalDiffPath: /tmp/.../pr-NNN-SHA-incremental.diff\` then \`diffPath: /tmp/.../pr-NNN-SHA.diff\`) — the reviewer's baked-in prompt reads incremental first and uses full for context. when only \`diffPath\` exists, name it alone. paraphrasing ("review the new commits") sends the subagent down the \`git diff origin/<base>\` fallback, which fails on shallow GHA checkouts. do NOT tell them to skip pre-existing issues — that suppresses regressions the new commits amplified; the "issues must be NEW" filter lives at aggregation time (step 8), not in the subagent prompt.
+   - **the absolute diff path(s) from step 2's \`${t("checkout_pr")}\` return, named verbatim in the dispatch prompt.** when \`incrementalDiffPath\` is present, name BOTH (\`incrementalDiffPath: /tmp/.../pr-NNN-SHA-incremental.diff\` then \`diffPath: /tmp/.../pr-NNN-SHA.diff\`) — the reviewer's baked-in prompt reads incremental first and uses full for context; when only \`diffPath\` exists, name it alone. the subagent \`read\`s those files; it must NOT re-derive via \`git diff\` (bare \`git diff origin/<base>\` is symmetric and pulls in the inverse of base-branch progress — pure noise, and the git tool rejects it), and paraphrasing ("review the new commits") sends it down that fallback, which also fails on shallow GHA checkouts. do NOT tell them to skip pre-existing issues — that suppresses regressions the new commits amplified; the "issues must be NEW" filter lives at aggregation time (step 8), not in the subagent prompt.
    - **only one lens** — never a multi-section "review for X, Y, and Z" prompt
    - **a Task \`description\` set to the lens name** — the harness reads this field to label log lines so parallel runs can be told apart.
    - if the lens touches external contracts, instruct the subagent to verify load-bearing claims via web search and quote source URLs.

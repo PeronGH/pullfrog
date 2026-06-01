@@ -791,7 +791,8 @@ export function CheckoutPrTool(ctx: ToolContext) {
         `use the TOC line ranges as your checklist and read specific files from the diff instead of reading the entire file. ` +
         `for example, if the TOC says "src/foo.ts → lines 5-42", read lines 5-42 from diffPath to see that file's changes. ` +
         `review files selectively based on relevance rather than reading everything sequentially. ` +
-        `to inspect the PR's changed files, use diffPath — do NOT run \`git diff <base>..<head>\` to re-derive what's already in diffPath. the formatted diff with line numbers is authoritative. ` +
+        `to inspect the PR's changed files, use diffPath — do NOT run \`git diff\` to re-derive what's already in diffPath. the formatted diff with line numbers is authoritative. ` +
+        `if you ever do need a branch-vs-base diff via the git tool, use \`git diff --merge-base <base>\` (single call, includes uncommitted edits) or three-dot \`git diff <base>...HEAD\` (committed-only). bare \`<base>\` and two-dot \`<base>..HEAD\` are symmetric and pull in the inverse of every commit landed on \`<base>\` since the branch forked — the git tool will reject those forms when the divergence is detected. \`$(...)\` subshells are NOT expanded by the git tool. ` +
         `\`git log\` and \`git diff --stat\` are fine for commit-range overview, and \`git diff\` / \`git diff --cached\` are fine for inspecting *your own* uncommitted changes — but PR review content MUST come from diffPath. ` +
         `before your review is submitted, a one-time coverage pre-flight may error listing unread TOC regions. ` +
         `retry the same create_pull_request_review call to proceed — optionally after reading the listed ranges. the pre-flight will not block again this session. ` +

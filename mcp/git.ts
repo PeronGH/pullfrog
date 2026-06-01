@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { regex } from "arkregex";
 import { type } from "arktype";
 import type { StoredPushDest } from "../toolState.ts";
@@ -503,6 +506,109 @@ export const NOSHELL_BLOCKED_ARGS = ["--exec", "--extcmd", "--upload-pack", "--r
 
 const COLLAPSE_THRESHOLD = 200;
 
+/** above this, the full body is spilled to a tmp file and only a short head
+ * preview is logged + returned inline. mirrors `capOutput` in `mcp/shell.ts`
+ * (which uses 5000 for shell commands; diff/log outputs need more headroom).
+ * the operator log gets a single summary line instead of a 1000+ line dump. */
+const MAX_GIT_OUTPUT_CHARS = 50_000;
+const OVERFLOW_PREVIEW_LINES = 50;
+/** absolute char cap on the inline preview, in case the first
+ * `OVERFLOW_PREVIEW_LINES` lines contain a minified blob / binary diff /
+ * single very long line that would blow the agent's context anyway. */
+const OVERFLOW_PREVIEW_MAX_CHARS = 5_000;
+
+/** detect refs in `git diff` args that would produce a symmetric (two-dot)
+ * diff including the inverse of commits that landed on `<ref>` since the
+ * branch forked. returns the offending arg + the ref that's ahead + count of
+ * unmerged commits, or null if the call is safe. silently ignores args that
+ * aren't refs (paths, pathspecs), three-dot ranges (those are merge-base
+ * diffs, the correct shape), and any call passing `--merge-base` (git's own
+ * shorthand for a merge-base diff, also safe). see [run 26545933188](https://github.com/pullfrog/app/actions/runs/26545933188)
+ * for the failure mode this guards against. */
+function detectSymmetricDiffTrap(
+  args: string[]
+): { arg: string; aheadRef: string; ahead: number } | null {
+  // git's own `--merge-base` flag (2.30+) produces a safe merge-base diff
+  // regardless of the positional ref; the GHA runner has git 2.54.x.
+  if (args.includes("--merge-base")) return null;
+  // ignore everything after `--` (pathspec separator)
+  const endIdx = args.indexOf("--");
+  const positionals = (endIdx === -1 ? args : args.slice(0, endIdx)).filter(
+    (a) => !a.startsWith("-")
+  );
+  for (const p of positionals) {
+    if (p.includes("...")) continue; // three-dot = merge-base diff, safe
+    // bare ref `A`: implicit second side is HEAD; agent's intent is
+    // "what my branch changed vs <ref>". fires when <ref> has commits HEAD
+    // doesn't (branch behind base). diffs against an ancestor (HEAD ahead
+    // of <ref>) are the legitimate "what did I add since X" case and must
+    // not be blocked.
+    //
+    // two-dot range `A..B`: degenerate when one side is an ancestor of the
+    // other (the tree diff equals the merge-base diff — safe). only the
+    // truly-diverged case (BOTH sides have commits the other lacks) pulls
+    // unwanted inverse-of-progress into the diff. shorthand expansions:
+    // `A..` → `A..HEAD`, `..A` → `HEAD..A`.
+    if (p.includes("..")) {
+      const parts = p.split("..");
+      if (parts.length !== 2) continue;
+      const left = parts[0] || "HEAD";
+      const right = parts[1] || "HEAD";
+      const leftAhead = countAhead(right, left);
+      const rightAhead = countAhead(left, right);
+      if (leftAhead === null || rightAhead === null) continue;
+      if (leftAhead > 0 && rightAhead > 0) {
+        const aheadRef = leftAhead >= rightAhead ? left : right;
+        return { arg: p, aheadRef, ahead: Math.max(leftAhead, rightAhead) };
+      }
+      continue;
+    }
+    const ahead = countAhead("HEAD", p);
+    if (ahead === null) continue;
+    if (ahead > 0) return { arg: p, aheadRef: p, ahead };
+  }
+  return null;
+}
+
+/** `rev-list --count head..base` = commits on `base` not on `head`. returns
+ * null if either ref is unresolvable (probably a pathspec). */
+function countAhead(head: string, base: string): number | null {
+  try {
+    const out = $("git", ["rev-list", "--count", `${head}..${base}`], { log: false }).trim();
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** persist `output` to a tmp file and return an agent-facing string that
+ * leads with a head preview and ends with a sentinel pointing at the path.
+ * keeps the operator log to a single summary line for the overflow case. */
+function spillGitOutput(params: {
+  command: string;
+  args: string[];
+  output: string;
+  lineCount: number;
+}): { output: string; outputPath: string } {
+  const tempDir = process.env.PULLFROG_TEMP_DIR;
+  if (!tempDir) throw new Error("PULLFROG_TEMP_DIR not set");
+  const outputPath = join(tempDir, `git-${params.command}-${randomUUID().slice(0, 8)}.txt`);
+  writeFileSync(outputPath, params.output);
+  const previewByLines = params.output.split("\n").slice(0, OVERFLOW_PREVIEW_LINES).join("\n");
+  const preview =
+    previewByLines.length <= OVERFLOW_PREVIEW_MAX_CHARS
+      ? previewByLines
+      : `${previewByLines.slice(0, OVERFLOW_PREVIEW_MAX_CHARS)}…`;
+  log.info(
+    `» git ${params.command} ${params.args.join(" ")}: ${params.lineCount} lines / ${params.output.length} chars → ${outputPath}`
+  );
+  return {
+    output: `${preview}\n\n... [output truncated; full ${params.lineCount}-line / ${params.output.length}-char body saved to ${outputPath} — read selectively with \`read({ filePath: "${outputPath}" })\`] ...`,
+    outputPath,
+  };
+}
+
 // SECURITY: subcommand must match [a-z][a-z0-9-]* to reject flags passed as the subcommand.
 // this blocks injection of global git options like -c, -C, --exec-path, --config-env, etc.
 //
@@ -524,7 +630,11 @@ export function GitTool(ctx: ToolContext) {
       "`args` is optional; omit it entirely for no-flag invocations like plain `git status`. " +
       'Example: `git({ command: "status" })` for plain `git status`. ' +
       'Example: `git({ command: "log", args: ["--oneline", "-n", "20"] })`. ' +
-      'Example: `git({ command: "diff", args: ["origin/main..HEAD"] })`. ' +
+      'Example: `git({ command: "diff", args: ["--merge-base", "origin/main"] })` — merge-base diff including uncommitted edits (single MCP call). ' +
+      'Example: `git({ command: "diff", args: ["origin/main...HEAD"] })` — three-dot, committed-only changes vs merge-base. ' +
+      "For PR-scope diffs ALWAYS use `--merge-base <base>` or three-dot `<base>...HEAD`. " +
+      "Bare `<base>` and two-dot `<base>..HEAD` are symmetric (working-tree-or-HEAD vs ref): when your branch is behind `<base>` they include the inverse of every commit on `<base>` you lack — pure noise, and this tool will reject those forms when the divergence is detected. " +
+      "Output >50K chars is spilled to a tmp file; the tool returns a head preview + path you can `read` selectively. " +
       "For push/fetch, use the dedicated MCP tools (push_branch, git_fetch). " +
       "git pull is not available — use git_fetch then this tool with command 'merge'.",
     parameters: Git,
@@ -574,6 +684,24 @@ export function GitTool(ctx: ToolContext) {
         }
       }
 
+      // reject symmetric (two-dot or bare-ref) diffs whose endpoints have
+      // commits each other doesn't — those include the *inverse* of every
+      // commit on the diverged side, ballooning the diff and confusing
+      // reviewer subagents. three-dot (`A...B`) and `--merge-base` are
+      // always allowed (both produce merge-base diffs).
+      if (command === "diff") {
+        const trap = detectSymmetricDiffTrap(args);
+        if (trap) {
+          throw new Error(
+            `git diff '${trap.arg}' would include the inverse of ${trap.ahead} commit(s) on '${trap.aheadRef}' that aren't on the other side — that's a symmetric tree diff full of upstream noise, not your branch's own changes.\n\n` +
+              `use one of:\n` +
+              `  - git diff --merge-base ${trap.aheadRef}     (one MCP call; merge-base diff, includes uncommitted edits)\n` +
+              `  - git diff ${trap.aheadRef}...HEAD            (three-dot; merge-base diff of committed-only changes)\n\n` +
+              `if you ALSO need the PR's pre-formatted diff, the orchestrator's checkout_pr response includes a \`diffPath\` you can \`read\` directly without invoking git at all.`
+          );
+        }
+      }
+
       // `git merge-base --is-ancestor` uses exit codes as data: 0 = ancestor,
       // 1 = not-an-ancestor, >1 = real error. Surface the binary answer
       // instead of throwing on exit 1. see #766.
@@ -600,6 +728,10 @@ export function GitTool(ctx: ToolContext) {
 
       const output = $("git", [command, ...args], { log: false });
       const lineCount = output.split("\n").length;
+      if (output.length > MAX_GIT_OUTPUT_CHARS) {
+        const spilled = spillGitOutput({ command, args, output, lineCount });
+        return { success: true, output: spilled.output, outputPath: spilled.outputPath };
+      }
       if (lineCount > COLLAPSE_THRESHOLD) {
         log.group(`git ${command} output (${lineCount} lines)`, () => {
           log.info(output);
