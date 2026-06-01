@@ -21,6 +21,10 @@ interface InstructionsContext {
    * inline into the LEARNINGS prompt section so the agent can `read_file`
    * targeted line ranges instead of pulling the whole file into context. */
   learningsHeadings: LearningsHeading[];
+  /** agent-facing description of a setup lifecycle hook failure (see
+   * `describeSetupFailure`), rendered as a SETUP HOOK FAILED banner. empty
+   * string when the hook succeeded, was skipped, or wasn't configured. */
+  setupHookFailure: string;
 }
 
 interface PromptContext extends InstructionsContext {
@@ -175,6 +179,16 @@ ${parts.join("\n\n")}`;
   }
 
   return "";
+}
+
+// render the SETUP HOOK FAILED banner; omitted unless the hook ran and failed.
+function buildSetupFailureSection(failureDescription: string): string {
+  if (!failureDescription) return "";
+  return `************* SETUP HOOK FAILED *************
+
+The repo-configured setup hook, which provisions this environment before you start, did not complete successfully. ${failureDescription}
+
+The environment may be only partially provisioned, but this is often benign (e.g. the hook tried to install a tool that is already present). Proceed with YOUR TASK as normal and do not debug the hook itself — only install or work around a missing tool or dependency if a command actually fails because of it.`;
 }
 
 // mode selection and execution steps
@@ -410,6 +424,7 @@ export function buildLearningsSection(ctx: {
 function assembleFullPrompt(ctx: {
   toc: string;
   task: string;
+  setupFailure: string;
   procedure: string;
   eventContext: string;
   system: string;
@@ -432,6 +447,7 @@ function assembleFullPrompt(ctx: {
   const rawFull = [
     ctx.toc,
     ctx.task,
+    ctx.setupFailure,
     ctx.procedure,
     ctx.eventContext,
     ctx.system,
@@ -448,6 +464,7 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
   const pctx = buildPromptContext(ctx);
 
   const task = buildTaskSection(pctx);
+  const setupFailure = buildSetupFailureSection(pctx.setupHookFailure);
   const procedure = buildProcedure(pctx);
   const eventContext = buildEventContext(pctx);
   const system = buildSystemBody(pctx);
@@ -455,6 +472,11 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
   // build TOC from present sections (PROCEDURE, SYSTEM, RUNTIME are always present)
   const tocEntries: TocEntry[] = [];
   if (task) tocEntries.push({ label: "YOUR TASK", description: "what to accomplish" });
+  if (setupFailure)
+    tocEntries.push({
+      label: "SETUP HOOK FAILED",
+      description: "environment provisioning warning",
+    });
   tocEntries.push({ label: "PROCEDURE", description: "mode selection and execution steps" });
   if (eventContext)
     tocEntries.push({ label: "EVENT CONTEXT", description: "related PR/issue data" });
@@ -471,6 +493,7 @@ export function resolveInstructions(ctx: InstructionsContext): ResolvedInstructi
   const full = assembleFullPrompt({
     toc,
     task,
+    setupFailure,
     procedure,
     eventContext,
     system,

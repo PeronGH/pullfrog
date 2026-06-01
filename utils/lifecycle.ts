@@ -31,6 +31,25 @@ export type LifecycleHookFailure =
   | { kind: "timeout" }
   | { kind: "spawn"; spawnError: string };
 
+/** one-line, agent-facing description of a hook failure. empty string when
+ * there was no failure, so callers can pass the result straight through to a
+ * prompt section that omits itself on empty. */
+export function describeSetupFailure(failure: LifecycleHookFailure | undefined): string {
+  if (!failure) return "";
+  switch (failure.kind) {
+    case "exit":
+      return `It exited with code ${failure.exitCode}. Output:\n\n${failure.output || "(empty)"}`;
+    case "timeout":
+      return "It timed out and was killed before completing.";
+    case "spawn":
+      return `It failed to start: ${failure.spawnError}`;
+    default: {
+      const _exhaustive: never = failure;
+      return _exhaustive satisfies never;
+    }
+  }
+}
+
 export interface LifecycleHookResult {
   /**
    * human-readable warning when the hook failed. includes retry guidance:
@@ -52,9 +71,9 @@ export interface LifecycleHookResult {
  * execute a lifecycle hook script if one is configured.
  *
  * soft-fails: instead of throwing on hook errors, returns a warning string
- * (and structured failure info) so callers can choose whether to surface
- * it (mcp tools) or upgrade it to a fatal error (setup). timeouts are
- * flagged as non-retryable in the warning text.
+ * (and structured failure info) so callers can choose how to surface it
+ * (mcp tools relay it to the agent; setup logs it and adds a prompt banner).
+ * timeouts are flagged as non-retryable in the warning text.
  */
 export async function executeLifecycleHook(
   params: ExecuteLifecycleHookParams

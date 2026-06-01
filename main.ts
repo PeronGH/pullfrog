@@ -28,7 +28,7 @@ import { startGitAuthServer } from "./utils/gitAuthServer.ts";
 import { createOctokit, writeGitHubUsageSummaryToFile } from "./utils/github.ts";
 import { resolveInstructions } from "./utils/instructions.ts";
 import { persistLearnings, seedLearningsFile } from "./utils/learnings.ts";
-import { executeLifecycleHook } from "./utils/lifecycle.ts";
+import { describeSetupFailure, executeLifecycleHook } from "./utils/lifecycle.ts";
 import { normalizeEnv, sanitizeSecret } from "./utils/normalizeEnv.ts";
 import {
   captureAuthorizedModels,
@@ -338,16 +338,16 @@ export async function main(): Promise<MainResult> {
     }
     timer.checkpoint("packageManager");
 
-    // execute setup lifecycle hook (runs once at initialization).
-    // setup is load-bearing — if it fails the rest of the run is in an
-    // undefined state, so upgrade the soft-fail warning to a hard error.
+    // execute the setup lifecycle hook (runs once at initialization). best-effort:
+    // a failure no longer aborts the run — we warn the operator and surface it to
+    // the agent via the SETUP HOOK FAILED banner so it can verify the env and adapt.
     const setupHook = await executeLifecycleHook({
       event: "setup",
       script: runContext.repoSettings.setupScript,
       normalizeWorkingTreeAfter: true,
     });
     if (setupHook.warning) {
-      throw new Error(setupHook.warning);
+      log.warning(setupHook.warning);
     }
     timer.checkpoint("lifecycleHooks::setup");
 
@@ -464,6 +464,7 @@ export async function main(): Promise<MainResult> {
       outputSchema,
       learningsFilePath: toolState.learningsFilePath ?? null,
       learningsHeadings: runContext.repoSettings.learningsHeadings,
+      setupHookFailure: describeSetupFailure(setupHook.failure),
     });
     const logParts = [
       instructions.eventInstructions
