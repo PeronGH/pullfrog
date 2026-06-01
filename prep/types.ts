@@ -27,6 +27,8 @@ export type PrepResult = NodePrepResult | PythonPrepResult | UnknownLanguagePrep
 export type PrepOptions = {
   /** when true, lifecycle scripts (postinstall, etc.) are suppressed */
   ignoreScripts: boolean;
+  /** directory the corepack shim is installed into (see `packageManagerBinDir`) */
+  binDir: string;
 };
 
 export interface PrepDefinition {

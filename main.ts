@@ -36,7 +36,11 @@ import {
   getAuthorizedModels,
 } from "./utils/openCodeModels.ts";
 import { applyOverrides } from "./utils/overrides.ts";
-import { ensurePackageManager, resolvePackageManagerSpec } from "./utils/packageManager.ts";
+import {
+  ensurePackageManager,
+  packageManagerBinDir,
+  resolvePackageManagerSpec,
+} from "./utils/packageManager.ts";
 import { aggregateUsage, patchWorkflowRunFields } from "./utils/patchWorkflowRunFields.ts";
 import { resolveOutputSchema, resolvePayload, resolvePromptInput } from "./utils/payload.ts";
 import { type OidcCredentials, runProxyResolution } from "./utils/proxy.ts";
@@ -331,10 +335,12 @@ export async function main(): Promise<MainResult> {
     // block pnpm 11.3 added) into our commit — see #844. resolution
     // honors pnpm 11+ precedence (`devEngines.packageManager` over
     // `packageManager`); failure is non-fatal — we fall back to whatever
-    // is on PATH with a warning.
+    // is on PATH with a warning. the shim lands in a private bin dir
+    // (prepended to PATH), not the node bin dir, so a setup `npm i -g pnpm`
+    // can't collide with it.
     const pmSpec = await resolvePackageManagerSpec(process.cwd());
     if (pmSpec) {
-      await ensurePackageManager(pmSpec);
+      await ensurePackageManager({ spec: pmSpec, binDir: packageManagerBinDir(tmpdir) });
     }
     timer.checkpoint("packageManager");
 

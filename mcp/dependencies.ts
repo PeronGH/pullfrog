@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import type { PrepOptions, PrepResult } from "../prep/index.ts";
 import { runPrepPhase } from "../prep/index.ts";
+import { packageManagerBinDir } from "../utils/packageManager.ts";
 import type { ToolContext } from "./server.ts";
 import { execute, tool } from "./shared.ts";
 
@@ -80,6 +81,7 @@ export function startInstallation(ctx: ToolContext): void {
   // agents from using package.json scripts as a backdoor for code execution
   const prepOptions: PrepOptions = {
     ignoreScripts: ctx.payload.shell === "disabled",
+    binDir: packageManagerBinDir(ctx.tmpdir),
   };
 
   // initialize state and start installation

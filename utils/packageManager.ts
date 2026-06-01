@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import semver from "semver";
 import { log } from "./cli.ts";
 import { spawn } from "./subprocess.ts";
@@ -168,6 +168,22 @@ async function currentVersion(name: SupportedPackageManager): Promise<string | n
   return result.stdout.trim();
 }
 
+/** the per-run directory the corepack shim is installed into. deliberately
+ * NOT the node bin dir: that's npm's `-g` target, and a corepack shim sitting
+ * there makes a customer setup script's `npm i -g pnpm` abort with EEXIST
+ * (npm refuses to clobber a binary it doesn't own). lives under the run
+ * tmpdir so it's cleaned up with everything else. */
+export function packageManagerBinDir(tmpdir: string): string {
+  return join(tmpdir, "pm-bin");
+}
+
+export interface EnsurePackageManagerParams {
+  spec: PackageManagerSpec;
+  /** directory to install the corepack shim into (see `packageManagerBinDir`).
+   * prepended to PATH so the pinned binary resolves by name. */
+  binDir: string;
+}
+
 /**
  * ensure the requested package manager is on PATH at the declared version,
  * provisioning via corepack when applicable. returns true if PATH now
@@ -175,11 +191,17 @@ async function currentVersion(name: SupportedPackageManager): Promise<string | n
  * the caller should treat PATH as untrusted and may fall back to its
  * legacy install path).
  *
+ * the corepack shim is installed into `params.binDir` (prepended to PATH),
+ * not the node bin dir, so a later `npm i -g pnpm` in a setup hook can't
+ * collide with it. our dir wins the PATH lookup, so the pinned version is
+ * also what resolves even if that `npm i -g` succeeds into the node bin dir.
+ *
  * never throws: network failure, missing corepack, range-only versions —
  * all degrade to "log warning, return false". the existing PATH binary
  * still works; we just don't get our version guarantee.
  */
-export async function ensurePackageManager(spec: PackageManagerSpec): Promise<boolean> {
+export async function ensurePackageManager(params: EnsurePackageManagerParams): Promise<boolean> {
+  const spec = params.spec;
   if (spec.name === "npm") return true;
 
   if (!(COREPACK_MANAGED as readonly string[]).includes(spec.name)) {
@@ -199,15 +221,22 @@ export async function ensurePackageManager(spec: PackageManagerSpec): Promise<bo
     return true;
   }
 
-  log.info(`» corepack prepare ${spec.name}@${spec.version} --activate`);
+  log.info(
+    `» corepack prepare ${spec.name}@${spec.version} --activate (shim dir: ${params.binDir})`
+  );
 
-  const enable = await runCorepack(["enable"]);
+  await mkdir(params.binDir, { recursive: true });
+  const enable = await runCorepack(["enable", "--install-directory", params.binDir, spec.name]);
   if (enable.exitCode !== 0) {
     log.warning(
       `» corepack enable failed (exit ${enable.exitCode}); leaving ${spec.name} from PATH. stderr: ${enable.stderr.trim() || "(empty)"}`
     );
     return false;
   }
+
+  // shim dir first so `pnpm` resolves to the pinned binary and shadows any
+  // `pnpm` a later `npm i -g pnpm` drops into the node bin dir.
+  process.env.PATH = `${params.binDir}${delimiter}${process.env.PATH ?? ""}`;
 
   const prepare = await runCorepack(["prepare", `${spec.name}@${spec.version}`, "--activate"]);
   if (prepare.exitCode !== 0) {

@@ -96,7 +96,8 @@ export const installNodeDependencies: PrepDefinition = {
       }
 
       let provisioned = false;
-      if (declared) provisioned = await ensurePackageManager(declared);
+      if (declared)
+        provisioned = await ensurePackageManager({ spec: declared, binDir: options.binDir });
       if (!provisioned) {
         const fallbackSpec = declared ? `${declared.name}@${declared.version}` : packageManager;
         const installError = await installFallback(packageManager, fallbackSpec);
@@ -113,7 +114,7 @@ export const installNodeDependencies: PrepDefinition = {
       // PATH already has the binary — but it may be the wrong version.
       // ensurePackageManager is idempotent (caches on `--version` match) so
       // this is cheap when main.ts already activated it.
-      await ensurePackageManager(declared);
+      await ensurePackageManager({ spec: declared, binDir: options.binDir });
     }
 
     // frozen-lockfile install only. eager prep is non-mutating by contract:
