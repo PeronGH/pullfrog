@@ -33,8 +33,10 @@
  *      `toolState.agentDiagnostic`; `formatAgentHangBody` renders that as
  *      a markdown block.
  *
- *   6. Default — a generic `❌ Pullfrog failed` block with the raw error
- *      message in a fenced code block. Same body for both surfaces.
+ *   6. Default — a plain-English lead sentence explaining the run failed,
+ *      followed by the raw error message in a fenced code block (so the user
+ *      never sees a bare internal string). The job summary adds the
+ *      `### ❌ Pullfrog failed` banner on top of the same body.
  *
  * The hang body and the API-key body diverge between the two surfaces only
  * in that the job summary wraps them in the `### ❌ Pullfrog failed` H3
@@ -59,6 +61,24 @@ export type RenderedRunError = {
 
 function isProviderModelNotFoundError(message: string): boolean {
   return message.includes("ProviderModelNotFoundError");
+}
+
+/**
+ * Generic failure copy for any shape not caught by a more specific classifier
+ * (billing / api-key / hang / model-not-found). A plain-English lead sentence
+ * so the user isn't staring at a raw internal string like
+ * `opencode prompt failed: fetch failed`, followed by the actual error in a
+ * fenced code block for anyone who needs the detail. Shared by both surfaces;
+ * the job summary adds the `### ❌ Pullfrog failed` banner on top.
+ */
+function formatGenericFailure(errorMessage: string): string {
+  return [
+    "Pullfrog ran into an unexpected error and couldn't finish this run. The underlying error is below — re-trigger Pullfrog to try again, and reach out to support if it keeps happening.",
+    "",
+    "```",
+    errorMessage,
+    "```",
+  ].join("\n");
 }
 
 /**
@@ -204,8 +224,9 @@ export function renderRunError(input: {
     };
   }
 
+  const genericBody = formatGenericFailure(input.errorMessage);
   return {
-    summary: `### ❌ Pullfrog failed\n\n\`\`\`\n${input.errorMessage}\n\`\`\``,
-    comment: input.errorMessage,
+    summary: `### ❌ Pullfrog failed\n\n${genericBody}`,
+    comment: genericBody,
   };
 }

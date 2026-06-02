@@ -56,11 +56,17 @@ import {
   type Part,
   type TextPartInput,
 } from "@opencode-ai/sdk/v2";
+import { Agent, fetch as undiciFetch } from "undici";
 import { pullfrogMcpName } from "../external.ts";
 import { BEDROCK_MODEL_ID_ENV } from "../models.ts";
 import type { ToolState } from "../toolState.ts";
-import { markActivity } from "../utils/activity.ts";
-import { type AgentDiagnostic, formatAgentHangBody } from "../utils/agentHangReport.ts";
+import {
+  isActivitySuspended,
+  markActivity,
+  resumeActivity,
+  suspendActivity,
+} from "../utils/activity.ts";
+import type { AgentDiagnostic } from "../utils/agentHangReport.ts";
 import { formatJsonValue, log } from "../utils/cli.ts";
 import { installCodexAuth } from "../utils/codexHome.ts";
 import { findProviderErrorMatch } from "../utils/providerErrors.ts";
@@ -373,7 +379,10 @@ async function consumeEvents(ctx: RunnerContext, signal: AbortSignal): Promise<v
     if (signal.aborted) break;
     ctx.eventCount += 1;
     ctx.diagnostic.eventCount = ctx.eventCount;
-    ctx.lastEventAt = performance.now();
+    // NB: `lastEventAt` (the inner-watchdog clock) is intentionally NOT bumped
+    // here — opencode's keepalive/lifecycle/idle events would otherwise mask a
+    // provider stall (the model going silent mid-turn looks like steady event
+    // flow). it is refreshed only on meaningful progress in `dispatchEvent`.
     markActivity();
     try {
       await dispatchEvent(ctx, event);
@@ -389,6 +398,10 @@ async function dispatchEvent(ctx: RunnerContext, event: EventSubscribeResponse):
   // event union covers heartbeats, session lifecycle, message lifecycle, tui,
   // mcp, etc. we only care about a small subset.
   if (event.type === "message.part.updated") {
+    // real model/tool progress: token/text/reasoning streaming and tool
+    // part transitions all arrive as part.updated. this is the only event
+    // class that refreshes the inner-watchdog clock.
+    ctx.lastEventAt = performance.now();
     await onPartUpdated(ctx, event.properties.part);
     return;
   }
@@ -480,6 +493,28 @@ async function onToolPart(
   const status = part.state.status;
   const toolName = part.tool;
   const toolId = part.callID;
+
+  // bracket tool execution against the activity watchdogs (issue #760): a
+  // synchronous multi-minute tool (e.g. `checkout_pr`'s git fetch+deepen)
+  // emits no events while it runs and would otherwise look like a stall.
+  // suspend on the non-terminal transition, resume on the terminal one;
+  // `suspendActivity` is idempotent and auto-resumes after a hard cap so a
+  // tool that never returns can't pin the watchdog open forever.
+  //
+  // the `task` wrapper (subagent dispatch) is excluded: its child session
+  // streams its own `message.part.updated` events, which refresh
+  // `lastEventAt`, so a genuinely stalled subagent is still caught by the
+  // 120s watchdog. suspending on the long-lived parent `task` part would
+  // instead mask child stalls until the 15min suspension hard cap. the
+  // subagent's own synchronous tools still suspend around their in-flight
+  // calls.
+  if (toolName !== "task") {
+    if (status === "completed" || status === "error") {
+      resumeActivity();
+    } else {
+      suspendActivity();
+    }
+  }
 
   // early task-dispatch announce: bind subagent sessionID to a label as soon
   // as the orchestrator's task tool transitions to "running" (where input is
@@ -721,10 +756,17 @@ async function runPromptTurn(
   //   2. AssistantMessage.error set by the provider (auth, context overflow, etc.)
   //   3. session.error event observed during the turn
   if (networkError) {
+    // a watchdog-fired abort surfaces here as a caught `session.prompt`
+    // rejection (or an aborted `response.error`), not a throw that escapes to
+    // the caller. classify it as an `activity timeout` so `renderRunError`
+    // routes it through the hang renderer; any other transport failure falls
+    // through to the generic humanized renderer.
     return {
       success: false,
       output: finalText,
-      error: `opencode prompt failed: ${networkError}`,
+      error: params.signal.aborted
+        ? `activity timeout: the model went silent and the turn was aborted by the activity watchdog (${networkError})`
+        : `opencode prompt failed: ${networkError}`,
       usage,
     };
   }
@@ -882,6 +924,10 @@ function formatPromptError(error: unknown): string {
  * when the harness is itself quiet. This inner timer specifically watches
  * `ctx.lastEventAt` and fires `onActivityTimeout` so main.ts can tear down
  * the MCP server early, mirroring the per-spawn watchdog in `subprocess.ts`.
+ *
+ * `ctx.lastEventAt` is refreshed only on meaningful progress (token/tool
+ * part.updated), and the timer skips while `isActivitySuspended()` (a tool
+ * call is in-flight), so it fires only on a genuine provider stall.
  */
 function startInnerActivityWatchdog(params: {
   ctx: RunnerContext;
@@ -891,6 +937,10 @@ function startInnerActivityWatchdog(params: {
   let fired = false;
   const id = setInterval(() => {
     if (fired) return;
+    // a tool call is in-flight (its execution is bracketed by
+    // suspend/resumeActivity in onToolPart) — event silence is expected, so
+    // don't count it against the model-stall clock.
+    if (isActivitySuspended()) return;
     const idleMs = performance.now() - params.ctx.lastEventAt;
     if (idleMs <= params.timeoutMs) return;
     fired = true;
@@ -1015,8 +1065,37 @@ export const opencode = agent({
 
     // ── boot server + create session ─────────────────────────────────────────
     const server = await bootOpencodeServer({ cliPath, env, cwd: repoDir });
+    // the SDK's bundled fetch tries to disable per-request timeouts via the
+    // bun-only `req.timeout = false` no-op, which does nothing under node/undici
+    // — so undici's default 300s headers/body timeout aborts any turn that
+    // streams for >5min as `TypeError: fetch failed`. wire an unbounded undici
+    // dispatcher through a custom fetch (createOpencodeClient's `fetch` override
+    // bypasses the SDK's own fetch) so a long turn isn't capped client-side.
+    // the inner activity watchdog below — not undici — is what bounds true stalls.
+    const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0, connectTimeout: 0 });
+    // forward the request through undici's own dispatcher-aware fetch (Agent and
+    // fetch from the same package, so `dispatcher` typechecks with no cast). the
+    // SDK hands our override a global `Request`, which the esbuild-bundled undici
+    // realm can't consume directly ("Failed to parse URL from [object Request]"),
+    // so we re-state its fields explicitly. `duplex: "half"` is required by the
+    // fetch spec whenever a stream body is sent.
+    const fetchWithoutTimeout: typeof fetch = (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return undiciFetch(request.url, {
+        method: request.method,
+        headers: [...request.headers],
+        body: request.body,
+        duplex: "half",
+        signal: request.signal,
+        dispatcher,
+      });
+    };
     try {
-      const client = createOpencodeClient({ baseUrl: server.baseUrl, directory: repoDir });
+      const client = createOpencodeClient({
+        baseUrl: server.baseUrl,
+        directory: repoDir,
+        fetch: fetchWithoutTimeout,
+      });
 
       const sessionResp = await client.session.create({ title: "Pullfrog" });
       if (sessionResp.error || !sessionResp.data) {
@@ -1091,7 +1170,14 @@ export const opencode = agent({
 
       const watchdog = startInnerActivityWatchdog({
         ctx: runnerCtx,
-        timeoutMs: 300_000,
+        // model-stall budget: how long the orchestrator may stream NO progress
+        // (no token/tool part.updated) before we tear the turn down. tool
+        // execution is excluded via suspend/resumeActivity, so this only bounds
+        // a genuinely silent provider. 120s comfortably exceeds normal inter-
+        // token gaps (incl. extended-thinking pauses) while catching the
+        // observed stalls (model goes quiet ~3-4min in) far sooner than the old
+        // 300s undici cap that this fix removes.
+        timeoutMs: 120_000,
         abortController,
       });
 
@@ -1099,7 +1185,7 @@ export const opencode = agent({
 
       try {
         // initial run
-        const initial = await runWithHangReport(runnerCtx, () =>
+        const initial = await runTurnGuarded(runnerCtx, () =>
           runPromptTurn(runnerCtx, {
             text: ctx.instructions.full,
             model: sdkModel,
@@ -1119,7 +1205,7 @@ export const opencode = agent({
               ? buildLearningsReflectionPrompt(ctx.toolState.learningsFilePath)
               : undefined,
           resume: async (c) =>
-            runWithHangReport(runnerCtx, () =>
+            runTurnGuarded(runnerCtx, () =>
               runPromptTurn(runnerCtx, {
                 text: c.prompt,
                 model: sdkModel,
@@ -1151,16 +1237,23 @@ export const opencode = agent({
           `opencode server close failed: ${err instanceof Error ? err.message : String(err)}`
         );
       });
+      await dispatcher.close().catch(() => {});
     }
   },
 });
 
 /**
- * Wrap a single turn so an exception (typically the inner watchdog aborting
- * the AbortController) renders the same diagnostic body the old CLI harness
- * surfaced on activity timeout / spawn error.
+ * Safety net around a single turn: convert any unexpected throw that escapes
+ * `runPromptTurn` into a `success: false` result so the post-run gate loop
+ * (which expects a result, not a rejection) can surface it through the generic
+ * renderer.
+ *
+ * Watchdog-fired aborts do NOT reach here — `runPromptTurn` owns the abort
+ * signal, catches the aborted `session.prompt` rejection internally, and
+ * classifies it as an `activity timeout` error itself. This wrapper must not
+ * re-classify, since a stray post-prompt throw is not a hang.
  */
-async function runWithHangReport(
+async function runTurnGuarded(
   ctx: RunnerContext,
   fn: () => Promise<AgentResult>
 ): Promise<AgentResult> {
@@ -1168,17 +1261,11 @@ async function runWithHangReport(
     return await fn();
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    const isHang = errorMessage.toLowerCase().includes("abort");
-    const body = formatAgentHangBody({
-      diagnostic: ctx.diagnostic,
-      isHang,
-      errorMessage,
-    });
     log.info(`» ${ctx.label} turn failed: ${errorMessage}`);
     return {
       success: false,
       output: ctx.currentTurn?.finalText ?? "",
-      error: body ?? errorMessage,
+      error: errorMessage,
     };
   }
 }
