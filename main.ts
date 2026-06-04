@@ -11,9 +11,9 @@ import { computeModes } from "./modes.ts";
 import { initToolState } from "./toolState.ts";
 import {
   type ActivityTimeout,
+  AGENT_ACTIVITY_TIMEOUT_MS,
   createProcessOutputActivityTimeout,
   DEFAULT_ACTIVITY_CHECK_INTERVAL_MS,
-  DEFAULT_ACTIVITY_TIMEOUT_MS,
 } from "./utils/activity.ts";
 import { resolveAgent, resolveModel } from "./utils/agent.ts";
 import { validateAgentApiKey } from "./utils/apiKeys.ts";
@@ -507,7 +507,7 @@ export async function main(): Promise<MainResult> {
 
     // run agent, optionally with timeout enforcement
     activityTimeout = createProcessOutputActivityTimeout({
-      timeoutMs: DEFAULT_ACTIVITY_TIMEOUT_MS,
+      timeoutMs: AGENT_ACTIVITY_TIMEOUT_MS,
       checkIntervalMs: DEFAULT_ACTIVITY_CHECK_INTERVAL_MS,
     });
     activityTimeout.promise.catch(() => {}); // prevent unhandled rejection if agent wins race

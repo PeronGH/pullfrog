@@ -60,12 +60,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 import { pullfrogMcpName } from "../external.ts";
 import { BEDROCK_MODEL_ID_ENV } from "../models.ts";
 import type { ToolState } from "../toolState.ts";
-import {
-  isActivitySuspended,
-  markActivity,
-  resumeActivity,
-  suspendActivity,
-} from "../utils/activity.ts";
+import { AGENT_ACTIVITY_TIMEOUT_MS, markActivity } from "../utils/activity.ts";
 import type { AgentDiagnostic } from "../utils/agentHangReport.ts";
 import { formatJsonValue, log } from "../utils/cli.ts";
 import { installCodexAuth } from "../utils/codexHome.ts";
@@ -145,7 +140,7 @@ function buildSecurityConfig(ctx: AgentRunContext, model: string | undefined): s
       // moonshotai/kimi stalls on the @openrouter/ai-sdk-provider 2.8.1 stream
       // parser opencode 1.15.13 bundles: duplicate tool-call emission on
       // kimi-k2.6 makes the turn produce zero further part.updated events until
-      // the 120s inner watchdog aborts (47% of kimi proxy runs vs 0% for claude).
+      // the inner watchdog aborts (47% of kimi proxy runs vs 0% for claude).
       // upstream fixed it in 2.9.0 (openrouter/ai-sdk-provider PR #489). opencode
       // only loads a non-bundled provider version when a model is redeclared
       // under provider.<id>.models with a versioned npm spec — a bare
@@ -408,7 +403,8 @@ async function consumeEvents(ctx: RunnerContext, signal: AbortSignal): Promise<v
   // falls silent. the teardown `await eventLoopPromise` in the run() finally
   // then blocks — `abortController.abort()` can't interrupt a `for await` that
   // never advances — until the outer process-output watchdog kills the
-  // already-succeeded run at 300s and reports a false "stalled" (PR #876).
+  // already-succeeded run once the flat idle budget elapses and reports a false
+  // "stalled" (PR #876).
   const result = await ctx.client.event.subscribe({}, { signal });
   for await (const event of result.stream as AsyncGenerator<EventSubscribeResponse>) {
     if (signal.aborted) break;
@@ -528,28 +524,6 @@ async function onToolPart(
   const status = part.state.status;
   const toolName = part.tool;
   const toolId = part.callID;
-
-  // bracket tool execution against the activity watchdogs (issue #760): a
-  // synchronous multi-minute tool (e.g. `checkout_pr`'s git fetch+deepen)
-  // emits no events while it runs and would otherwise look like a stall.
-  // suspend on the non-terminal transition, resume on the terminal one;
-  // `suspendActivity` is idempotent and auto-resumes after a hard cap so a
-  // tool that never returns can't pin the watchdog open forever.
-  //
-  // the `task` wrapper (subagent dispatch) is excluded: its child session
-  // streams its own `message.part.updated` events, which refresh
-  // `lastEventAt`, so a genuinely stalled subagent is still caught by the
-  // 120s watchdog. suspending on the long-lived parent `task` part would
-  // instead mask child stalls until the 15min suspension hard cap. the
-  // subagent's own synchronous tools still suspend around their in-flight
-  // calls.
-  if (toolName !== "task") {
-    if (status === "completed" || status === "error") {
-      resumeActivity();
-    } else {
-      suspendActivity();
-    }
-  }
 
   // early task-dispatch announce: bind subagent sessionID to a label as soon
   // as the orchestrator's task tool transitions to "running" (where input is
@@ -961,8 +935,11 @@ function formatPromptError(error: unknown): string {
  * the MCP server early, mirroring the per-spawn watchdog in `subprocess.ts`.
  *
  * `ctx.lastEventAt` is refreshed only on meaningful progress (token/tool
- * part.updated), and the timer skips while `isActivitySuspended()` (a tool
- * call is in-flight), so it fires only on a genuine provider stall.
+ * part.updated), so any prolonged gap with no progress advances the clock —
+ * including a long in-flight tool call. the budget is the same flat idle
+ * timeout as the outer watchdog, sized to exceed the worst-case legitimate
+ * silent tool window (#760), so a real tool can't trip it; a genuinely stalled
+ * provider or a hung tool does, at the flat budget.
  */
 function startInnerActivityWatchdog(params: {
   ctx: RunnerContext;
@@ -972,10 +949,6 @@ function startInnerActivityWatchdog(params: {
   let fired = false;
   const id = setInterval(() => {
     if (fired) return;
-    // a tool call is in-flight (its execution is bracketed by
-    // suspend/resumeActivity in onToolPart) — event silence is expected, so
-    // don't count it against the model-stall clock.
-    if (isActivitySuspended()) return;
     const idleMs = performance.now() - params.ctx.lastEventAt;
     if (idleMs <= params.timeoutMs) return;
     fired = true;
@@ -1206,13 +1179,13 @@ export const opencode = agent({
       const watchdog = startInnerActivityWatchdog({
         ctx: runnerCtx,
         // model-stall budget: how long the orchestrator may stream NO progress
-        // (no token/tool part.updated) before we tear the turn down. tool
-        // execution is excluded via suspend/resumeActivity, so this only bounds
-        // a genuinely silent provider. 120s comfortably exceeds normal inter-
-        // token gaps (incl. extended-thinking pauses) while catching the
-        // observed stalls (model goes quiet ~3-4min in) far sooner than the old
-        // 300s undici cap that this fix removes.
-        timeoutMs: 120_000,
+        // (no token/tool part.updated) before we tear the turn down. opencode's
+        // keepalive/lifecycle events keep the outer process-output monitor
+        // alive even while the model is silent, so this inner timer is the only
+        // stall detector for the v2 SSE path. it shares the flat idle budget so
+        // a long synchronous tool call (no part.updated while it runs) can't
+        // false-positive it.
+        timeoutMs: AGENT_ACTIVITY_TIMEOUT_MS,
         abortController,
       });
 

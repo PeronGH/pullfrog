@@ -1,5 +1,4 @@
 import { performance } from "node:perf_hooks";
-import { log } from "./log.ts";
 
 function isMonitorDebugEnabled(): boolean {
   return (
@@ -9,7 +8,25 @@ function isMonitorDebugEnabled(): boolean {
   );
 }
 
+/**
+ * generic `spawn()` idle default for ordinary short-lived subprocesses (prep
+ * probes, package-manager invocations, dependency installs). these should be
+ * producing output steadily, so a comparatively tight budget catches a wedged
+ * command promptly. the long-silent-tool tolerance the agent harnesses need
+ * lives in AGENT_ACTIVITY_TIMEOUT_MS, applied explicitly at those sites.
+ */
 export const DEFAULT_ACTIVITY_TIMEOUT_MS = 300_000;
+
+/**
+ * flat idle budget for the agent activity watchdog (the outer process-output
+ * monitor, the v1 harness spawns, and the v2 inner event-silence watchdog).
+ * sized to exceed the worst-case legitimate silent tool window (issue #760:
+ * `checkout_pr` git fetch+deepen on a large monorepo, ~4-5min) with generous
+ * headroom, so no single in-flight tool call can be mistaken for a stall. a
+ * timeout this generous needs no suspend/resume bracketing — the cost of a
+ * genuinely hung run is only GitHub Actions minutes, not tokens.
+ */
+export const AGENT_ACTIVITY_TIMEOUT_MS = 900_000;
 export const DEFAULT_ACTIVITY_CHECK_INTERVAL_MS = 5_000;
 
 /**
@@ -81,19 +98,6 @@ type WriteFunction = {
 let _lastActivity = performance.now();
 
 /**
- * upper bound on how long a single tool call can suspend the activity
- * watchdog. matched against the typical worst-case `checkout_pr`
- * fetch+deepen on a large monorepo (issue #760: 4-5min) plus generous
- * headroom for slower MCP tools, while still bounding the worst case if
- * a tool genuinely hangs and `tool_result` never arrives — auto-resume
- * fires here and the normal idle clock takes over from a fresh baseline.
- */
-export const MAX_TOOL_CALL_SUSPENSION_MS = 15 * 60 * 1000;
-
-let _suspendedAt: number | null = null;
-let _suspensionTimer: NodeJS.Timeout | null = null;
-
-/**
  * mark activity to reset the no-output timeout.
  * call this whenever the agent emits any event, even if it isn't logged to stdout.
  */
@@ -101,54 +105,9 @@ export function markActivity(): void {
   _lastActivity = performance.now();
 }
 
-/**
- * get the time since last activity in milliseconds.
- * returns 0 while the watchdog is suspended (issue #760).
- */
+/** get the time since last activity in milliseconds. */
 export function getIdleMs(): number {
-  if (_suspendedAt !== null) return 0;
   return Math.round(performance.now() - _lastActivity);
-}
-
-/**
- * suspend the activity watchdog while a long-running, in-flight unit of
- * work is happening (e.g. an MCP `tools/call` that synchronously awaits
- * a multi-minute git fetch). bracket calls with `resumeActivity()` from
- * the agent harness's `tool_use` / `tool_result` event handlers.
- *
- * - idempotent: nested suspends are no-ops; the first resume wins.
- * - bounded: auto-resumes after `maxMs` so a buggy tool that never
- *   produces a `tool_result` can't pin the watchdog open forever.
- * - safe: only the *agent harness* (claude.ts / opencode.ts) on explicit,
- *   paired CLI events should call this. NEVER blanket-suspend on internal
- *   noise — that would resurrect issue #12 zombie runs.
- */
-export function suspendActivity(maxMs: number = MAX_TOOL_CALL_SUSPENSION_MS): void {
-  if (_suspendedAt !== null) return;
-  _suspendedAt = performance.now();
-  _suspensionTimer = setTimeout(() => {
-    log.warning(`activity watchdog suspended >${Math.round(maxMs / 1000)}s — auto-resuming`);
-    resumeActivity();
-  }, maxMs);
-  _suspensionTimer.unref?.();
-}
-
-/**
- * resume the activity watchdog. resets the idle baseline so a stale
- * idle window before the suspend can't immediately re-fire.
- */
-export function resumeActivity(): void {
-  if (_suspendedAt === null) return;
-  _suspendedAt = null;
-  if (_suspensionTimer) {
-    clearTimeout(_suspensionTimer);
-    _suspensionTimer = null;
-  }
-  _lastActivity = performance.now();
-}
-
-export function isActivitySuspended(): boolean {
-  return _suspendedAt !== null;
 }
 
 function wrapWrite(original: WriteFunction, onActivity: () => void): WriteFunction {

@@ -117,22 +117,15 @@ export interface SpawnOptions {
   env?: NodeJS.ProcessEnv;
   input?: string;
   timeout?: number;
-  // activity timeout: kill process if no stdout for this many ms (default: 30s, 0 to disable).
-  // only stdout resets the timer — stderr (e.g. provider error retries) does not count as progress.
+  // activity timeout: kill process if no stdout for this many ms (default:
+  // DEFAULT_ACTIVITY_TIMEOUT_MS, 0 to disable). only stdout resets the timer —
+  // stderr (e.g. provider error retries) does not count as progress.
   activityTimeout?: number;
   // fired synchronously when the activity timeout kills the process. used by
   // callers (main.ts) to tear down shared resources like the MCP HTTP server
   // so that lingering SSE reconnects don't keep the outer activity timer
   // alive after the subprocess is already dead.
   onActivityTimeout?: (() => void) | undefined;
-  // optional pause predicate consulted on every activity check. when true,
-  // the spawn watchdog (a) skips its kill decision, (b) advances
-  // `lastActivityTime` so a stale baseline can't fire on resume. used by
-  // agent harnesses (claude.ts / opencode.ts) to suspend the watchdog
-  // across long synchronous MCP `tools/call` round-trips that the child's
-  // stdout pipe can't see (issue #760). bounded externally by
-  // `MAX_TOOL_CALL_SUSPENSION_MS` plus the outer agent timeout.
-  isPausedExternally?: () => boolean;
   cwd?: string;
   stdio?: ("pipe" | "ignore" | "inherit")[];
   onStdout?: (chunk: string) => void;
@@ -284,13 +277,6 @@ export async function spawn(options: SpawnOptions): Promise<SpawnResult> {
         `spawn activity timer: pid=${child.pid} cmd=${options.cmd} timeout=${activityTimeoutMs}ms`
       );
       activityCheckIntervalId = setInterval(() => {
-        if (options.isPausedExternally?.()) {
-          // reset the baseline so a clean resume can't immediately fire on
-          // the pre-pause idle window.
-          lastActivityTime = performance.now();
-          log.debug(`spawn activity check: pid=${child.pid} paused externally`);
-          return;
-        }
         const idleMs = performance.now() - lastActivityTime;
         log.debug(
           `spawn activity check: pid=${child.pid} idle=${Math.round(idleMs)}ms / ${activityTimeoutMs}ms`

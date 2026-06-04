@@ -24,13 +24,7 @@ import {
   VERTEX_MODEL_ID_ENV,
 } from "../models.ts";
 
-import {
-  getIdleMs,
-  isActivitySuspended,
-  markActivity,
-  resumeActivity,
-  suspendActivity,
-} from "../utils/activity.ts";
+import { AGENT_ACTIVITY_TIMEOUT_MS, getIdleMs, markActivity } from "../utils/activity.ts";
 import { formatJsonValue, log } from "../utils/cli.ts";
 import { installFromNpmTarball } from "../utils/install.ts";
 import { findProviderErrorMatch } from "../utils/providerErrors.ts";
@@ -434,13 +428,6 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
           }
         } else if (block.type === "tool_use") {
           const toolName = block.name || "unknown";
-          // suspend the activity watchdog across the tool call. claude's
-          // stdout pipe goes silent while it awaits the synchronous MCP
-          // tools/call HTTP response; without this, long fetches/deepens
-          // (issue #760) trip the spawn-level idle timer at 300s. paired
-          // with resumeActivity() in tool_result below; bounded by the
-          // MAX_TOOL_CALL_SUSPENSION_MS auto-resume in activity.ts.
-          suspendActivity();
           if (params.onToolUse) {
             params.onToolUse({
               toolName,
@@ -517,7 +504,6 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
       for (const block of content) {
         if (typeof block === "string") continue;
         if (block.type === "tool_result") {
-          resumeActivity();
           timerFor(label).markToolResult();
 
           const outputContent =
@@ -649,9 +635,10 @@ export async function runClaude(params: RunParams): Promise<ClaudeRunResult> {
       args: params.args,
       cwd: params.cwd,
       env: params.env,
-      activityTimeout: 300_000,
+      // flat agent idle budget — long synchronous MCP tool calls (issue #760)
+      // sit well under it, so no per-toolcall suspend bracketing is needed.
+      activityTimeout: AGENT_ACTIVITY_TIMEOUT_MS,
       onActivityTimeout: params.onActivityTimeout,
-      isPausedExternally: isActivitySuspended,
       stdio: ["ignore", "pipe", "pipe"],
       // run claude in its own process group so SIGKILL on activity timeout /
       // outer cancellation reaches any subprocesses it spawns (rg, file
