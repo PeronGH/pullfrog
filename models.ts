@@ -370,6 +370,18 @@ export const providers = {
       },
     },
   }),
+  "opencode-go": provider({
+    displayName: "OpenCode Go",
+    envVars: ["OPENCODE_API_KEY"],
+    models: {
+      "glm-5.1": {
+        displayName: "GLM 5.1",
+        resolve: "opencode-go/glm-5.1",
+        openRouterResolve: "openrouter/z-ai/glm-5.1",
+        preferred: true,
+      },
+    },
+  }),
   bedrock: provider({
     displayName: "Amazon Bedrock",
     envVars: ["AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION", "BEDROCK_MODEL_ID"],
