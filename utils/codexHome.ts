@@ -94,8 +94,9 @@ export interface InstalledCodexAuth {
  * caller treats null as "no codex auth, fall through to API key flow".
  *
  * The env value is server-side guaranteed fresh by `maybeRotateCodexSecret`
- * in the run-context endpoint. We only parse + write it here; no refresh,
- * no DB interaction. */
+ * in the run-context endpoint. We parse + write it here and set
+ * `process.env.XDG_DATA_HOME` so every opencode subprocess discovers the
+ * auth.json; no refresh, no DB interaction. */
 export function installCodexAuth(): InstalledCodexAuth | null {
   const raw = process.env[CODEX_AUTH_ENV];
   if (!raw) return null;
@@ -128,6 +129,12 @@ export function installCodexAuth(): InstalledCodexAuth | null {
 
   mkdirSync(opencodeDir, { recursive: true });
   writeFileSync(authPath, `${JSON.stringify(opencodeAuth, null, 2)}\n`, { mode: 0o600 });
+
+  // point every opencode subprocess in this run (agent spawn + `opencode
+  // models` introspection) at this auth.json. only opencode reads
+  // XDG_DATA_HOME and this only fires on codex runs, so the blast radius is
+  // exactly the subprocesses that must discover the OAuth-routed openai/* models.
+  process.env.XDG_DATA_HOME = xdgDataHome;
 
   log.info(`» installed Codex auth at ${authPath}`);
 
