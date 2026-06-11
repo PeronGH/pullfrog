@@ -131,7 +131,7 @@ export async function main(): Promise<MainResult> {
   // PULLFROG_TEMP_DIR (set as a side effect of createTempDirectory) when
   // the opencode CLI install runs below for BYOK introspection. agent +
   // mcp server setup further down also consume the same tmpdir.
-  const tmpdir = createTempDirectory();
+  createTempDirectory();
 
   // install OpenCode + capture the BASELINE model set BEFORE dbSecrets and
   // Codex auth.json are in scope. this is the set of models OpenCode can
