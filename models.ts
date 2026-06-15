@@ -22,8 +22,14 @@
  * routing slugs, not model aliases: the harness reads the backend-specific
  * env var and routes to claude-code for Anthropic IDs or opencode for
  * everything else.
+ *
+ * `"custom"` means the actual model ID comes from `CUSTOM_MODEL_ID` (an
+ * arbitrary OpenAI-compatible model ID like `moonshotai/kimi-k2.7-code`)
+ * served from a user-supplied `CUSTOM_BASE_URL` with `CUSTOM_API_KEY`. it
+ * always routes to opencode's `@ai-sdk/openai-compatible` provider — there is
+ * no Anthropic-wire-format variant.
  */
-export type ModelRouting = "bedrock" | "vertex";
+export type ModelRouting = "bedrock" | "vertex" | "custom";
 
 export interface ModelAlias {
   /** stable alias stored in DB, e.g. "anthropic/claude-opus" */
@@ -425,6 +431,20 @@ export const providers = {
       },
     },
   }),
+  custom: provider({
+    displayName: "Custom (OpenAI-compatible)",
+    envVars: ["CUSTOM_BASE_URL", "CUSTOM_API_KEY", "CUSTOM_MODEL_ID"],
+    models: {
+      // single routing entry — the actual model ID is read from CUSTOM_MODEL_ID
+      // at run time and served from CUSTOM_BASE_URL via opencode's
+      // openai-compatible provider. see ModelRouting docs.
+      byok: {
+        displayName: "Custom (OpenAI-compatible)",
+        resolve: "custom",
+        routing: "custom",
+      },
+    },
+  }),
   openrouter: provider({
     displayName: "OpenRouter",
     envVars: ["OPENROUTER_API_KEY"],
@@ -675,6 +695,9 @@ export const BEDROCK_MODEL_ID_ENV = "BEDROCK_MODEL_ID";
 
 /** env var that supplies the Vertex AI model ID for the `vertex/byok` slug. */
 export const VERTEX_MODEL_ID_ENV = "VERTEX_MODEL_ID";
+
+/** env var that supplies the OpenAI-compatible model ID for the `custom/byok` slug. */
+export const CUSTOM_MODEL_ID_ENV = "CUSTOM_MODEL_ID";
 
 /**
  * the Bedrock model ID passed to claude-code or opencode is whatever the

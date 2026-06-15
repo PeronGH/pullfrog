@@ -21,6 +21,9 @@ const STRIPPED = [
   /^VERTEX_SERVICE_ACCOUNT_JSON$/,
   /^VERTEX_LOCATION$/,
   /^VERTEX_MODEL_ID$/,
+  /^CUSTOM_MODEL_ID$/,
+  /^CUSTOM_BASE_URL$/,
+  /^CUSTOM_API_KEY$/,
   /^PULLFROG_SECRET_HOME$/,
   /^PULLFROG_MODEL$/,
   /^PULLFROG_AGENT$/,
@@ -107,6 +110,13 @@ describe("resolveAgent", () => {
       expect(resolveAgent({ model: "gemini-2.5-pro" }).name).toBe("opencode");
     });
   });
+
+  describe("custom routing", () => {
+    it("routes custom OpenAI-compatible IDs to opencode", () => {
+      process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+      expect(resolveAgent({ model: "moonshotai/kimi-k2.7-code" }).name).toBe("opencode");
+    });
+  });
 });
 
 describe("resolveModel", () => {
@@ -166,6 +176,21 @@ describe("resolveModel", () => {
     process.env.PULLFROG_MODEL = "vertex/byok";
     process.env.VERTEX_MODEL_ID = "gemini-2.5-pro";
     expect(resolveModel({ slug: "openai/gpt" })).toBe("gemini-2.5-pro");
+  });
+
+  it("resolves custom/byok to CUSTOM_MODEL_ID", () => {
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(resolveModel({ slug: "custom/byok" })).toBe("moonshotai/kimi-k2.7-code");
+  });
+
+  it("throws when custom/byok is selected without CUSTOM_MODEL_ID", () => {
+    expect(() => resolveModel({ slug: "custom/byok" })).toThrow("CUSTOM_MODEL_ID");
+  });
+
+  it("PULLFROG_MODEL=custom/byok defers to CUSTOM_MODEL_ID, not the sentinel", () => {
+    process.env.PULLFROG_MODEL = "custom/byok";
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(resolveModel({ slug: "openai/gpt" })).toBe("moonshotai/kimi-k2.7-code");
   });
 });
 

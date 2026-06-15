@@ -2,6 +2,7 @@ import type { Agent } from "../agents/index.ts";
 import { agents } from "../agents/index.ts";
 import {
   BEDROCK_MODEL_ID_ENV,
+  CUSTOM_MODEL_ID_ENV,
   getModelProvider,
   isBedrockAnthropicId,
   isVertexAnthropicId,
@@ -64,6 +65,17 @@ function resolveSlug(slug: string): string | undefined {
     }
     return vertexId;
   }
+  if (alias?.routing === "custom") {
+    const customId = process.env[CUSTOM_MODEL_ID_ENV]?.trim();
+    if (!customId) {
+      throw new Error(
+        `${CUSTOM_MODEL_ID_ENV} env var is required when the model is set to "${slug}". ` +
+          `set it to the OpenAI-compatible model ID served by your endpoint. ` +
+          `see https://docs.pullfrog.com/custom for setup.`
+      );
+    }
+    return customId;
+  }
   return resolveCliModel(slug);
 }
 
@@ -120,6 +132,14 @@ export function resolveAgent(ctx: { model?: string | undefined }): Agent {
   //    `google-vertex` provider.
   if (ctx.model && hasVertexAuth() && process.env[VERTEX_MODEL_ID_ENV]?.trim() === ctx.model) {
     return isVertexAnthropicId(ctx.model) ? agents.claude : agents.opencode;
+  }
+
+  // 3b. Custom OpenAI-compatible routing: always opencode (no Anthropic-wire
+  //     variant). opencode is the default fallback anyway, but route explicitly
+  //     so the three BYOK backends stay symmetric and a future provider-key
+  //     check can't misroute it to claude-code.
+  if (ctx.model && process.env[CUSTOM_MODEL_ID_ENV]?.trim() === ctx.model) {
+    return agents.opencode;
   }
 
   // 4. if model is Anthropic and Claude Code credentials are available, use Claude Code

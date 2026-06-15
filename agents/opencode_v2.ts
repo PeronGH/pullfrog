@@ -64,6 +64,11 @@ import { AGENT_ACTIVITY_TIMEOUT_MS, markActivity } from "../utils/activity.ts";
 import type { AgentDiagnostic } from "../utils/agentHangReport.ts";
 import { formatJsonValue, log } from "../utils/cli.ts";
 import { installCodexAuth } from "../utils/codexHome.ts";
+import {
+  buildCustomProviderConfig,
+  CUSTOM_PROVIDER_ID,
+  resolveCustomOpenCodeModel,
+} from "../utils/customProvider.ts";
 import { findProviderErrorMatch } from "../utils/providerErrors.ts";
 import { addSkill, installBundledSkills } from "../utils/skills.ts";
 import { trackChild, untrackChild } from "../utils/subprocess.ts";
@@ -173,6 +178,17 @@ function buildSecurityConfig(ctx: AgentRunContext, model: string | undefined): s
             },
             models: Object.fromEntries([...openrouterModelIDs].map((id) => [id, {}])),
           },
+        };
+      }
+
+      // custom OpenAI-compatible route: register the user's model under the
+      // `custom` provider pointed at CUSTOM_BASE_URL. the model arrives here as
+      // `custom/<CUSTOM_MODEL_ID>` (see resolveCustomOpenCodeModel), so
+      // enabled_providers above is already ["custom"].
+      if (model.slice(0, slashIndex) === CUSTOM_PROVIDER_ID) {
+        config.provider = {
+          ...config.provider,
+          [CUSTOM_PROVIDER_ID]: buildCustomProviderConfig(),
         };
       }
     }
@@ -1005,7 +1021,11 @@ export const opencode = agent({
     const isBedrockRoute =
       rawModel !== undefined && bedrockModelId !== undefined && bedrockModelId === rawModel;
     const vertexModel = resolveVertexOpenCodeModel(rawModel);
-    const model = vertexModel ?? (isBedrockRoute ? `amazon-bedrock/${rawModel}` : rawModel);
+    // custom OpenAI-compatible route: opencode expects `custom/<model-id>`,
+    // backed by the provider block injected in buildSecurityConfig.
+    const customModel = resolveCustomOpenCodeModel(rawModel);
+    const model =
+      customModel ?? vertexModel ?? (isBedrockRoute ? `amazon-bedrock/${rawModel}` : rawModel);
 
     const homeEnv = {
       HOME: ctx.tmpdir,

@@ -18,6 +18,8 @@ const ENV_KEYS_TO_STRIP = [
   /^VERTEX_SERVICE_ACCOUNT_JSON$/,
   /^VERTEX_LOCATION$/,
   /^VERTEX_MODEL_ID$/,
+  /^CUSTOM_MODEL_ID$/,
+  /^CUSTOM_BASE_URL$/,
 ];
 
 beforeEach(() => {
@@ -206,6 +208,45 @@ describe("validateAgentApiKey — Vertex routing", () => {
     expect(() => validateAgentApiKey({ ...params, model: "gemini-2.5-pro" })).toThrow(
       "VERTEX_SERVICE_ACCOUNT_JSON"
     );
+  });
+});
+
+describe("validateAgentApiKey — custom OpenAI-compatible routing", () => {
+  const params = { agent: opencode, authorized: new Set<string>(), owner, name };
+
+  it("passes with CUSTOM_BASE_URL + CUSTOM_API_KEY + CUSTOM_MODEL_ID via the slug", () => {
+    process.env.CUSTOM_BASE_URL = "https://gateway.example/v1";
+    process.env.CUSTOM_API_KEY = "sk-custom";
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(() => validateAgentApiKey({ ...params, model: "custom/byok" })).not.toThrow();
+  });
+
+  // regression: main.ts passes the post-resolveModel value, which for the
+  // custom route is the raw CUSTOM_MODEL_ID — and it CONTAINS a slash, so it
+  // must be caught by the env-sentinel branch, not the opencode-authorized check.
+  it("accepts a raw custom model ID (with a slash) without throwing", () => {
+    process.env.CUSTOM_BASE_URL = "https://gateway.example/v1";
+    process.env.CUSTOM_API_KEY = "sk-custom";
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(() =>
+      validateAgentApiKey({ ...params, model: "moonshotai/kimi-k2.7-code" })
+    ).not.toThrow();
+  });
+
+  it("throws when CUSTOM_BASE_URL is missing", () => {
+    process.env.CUSTOM_API_KEY = "sk-custom";
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(() => validateAgentApiKey({ ...params, model: "custom/byok" })).toThrow(
+      "CUSTOM_BASE_URL"
+    );
+  });
+
+  it("throws when CUSTOM_API_KEY is missing on the raw-model-ID path", () => {
+    process.env.CUSTOM_BASE_URL = "https://gateway.example/v1";
+    process.env.CUSTOM_MODEL_ID = "moonshotai/kimi-k2.7-code";
+    expect(() =>
+      validateAgentApiKey({ ...params, model: "moonshotai/kimi-k2.7-code" })
+    ).toThrow("CUSTOM_API_KEY");
   });
 });
 

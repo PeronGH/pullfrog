@@ -1,10 +1,12 @@
 import {
   BEDROCK_MODEL_ID_ENV,
+  CUSTOM_MODEL_ID_ENV,
   getModelEnvVars,
   resolveDisplayAlias,
   VERTEX_MODEL_ID_ENV,
 } from "../models.ts";
 import { getApiUrl } from "./apiUrl.ts";
+import { CUSTOM_API_KEY_ENV, CUSTOM_BASE_URL_ENV } from "./customProvider.ts";
 import {
   GOOGLE_CLOUD_PROJECT_ENV,
   readProjectIdFromVertexServiceAccountJson,
@@ -83,6 +85,20 @@ add the missing secret(s) to your GitHub repository at ${githubSecretsUrl}, then
 for full setup instructions, see https://docs.pullfrog.com/vertex`;
 }
 
+function buildCustomSetupError(params: { owner: string; name: string; missing: string[] }): string {
+  const githubSecretsUrl = `https://github.com/${params.owner}/${params.name}/settings/secrets/actions`;
+
+  return `Custom (OpenAI-compatible) model selected but required configuration is missing: ${params.missing.join(", ")}.
+
+add the missing secret(s) to your GitHub repository at ${githubSecretsUrl}, then reference them in your workflow's \`env:\` block:
+
+  ${CUSTOM_BASE_URL_ENV}: \${{ secrets.${CUSTOM_BASE_URL_ENV} }}
+  ${CUSTOM_API_KEY_ENV}: \${{ secrets.${CUSTOM_API_KEY_ENV} }}
+  ${CUSTOM_MODEL_ID_ENV}: <openai-compatible-model-id>
+
+for full setup instructions, see https://docs.pullfrog.com/custom`;
+}
+
 function hasEnvVar(name: string): boolean {
   const value = process.env[name];
   return typeof value === "string" && value.length > 0;
@@ -121,6 +137,17 @@ function validateVertexSetup(params: { owner: string; name: string }): void {
   }
 }
 
+function validateCustomSetup(params: { owner: string; name: string }): void {
+  const missing: string[] = [];
+  if (!hasEnvVar(CUSTOM_BASE_URL_ENV)) missing.push(CUSTOM_BASE_URL_ENV);
+  if (!hasEnvVar(CUSTOM_API_KEY_ENV)) missing.push(CUSTOM_API_KEY_ENV);
+  if (!hasEnvVar(CUSTOM_MODEL_ID_ENV)) missing.push(CUSTOM_MODEL_ID_ENV);
+
+  if (missing.length > 0) {
+    throw new Error(buildCustomSetupError({ owner: params.owner, name: params.name, missing }));
+  }
+}
+
 /**
  * Validate that the resolved model can actually be served by the chosen
  * agent. For routing slugs (Bedrock / Vertex) the auth shape is multi-var
@@ -146,6 +173,20 @@ export function validateAgentApiKey(params: {
     }
     if (alias?.routing === "vertex") {
       validateVertexSetup({ owner: params.owner, name: params.name });
+      return;
+    }
+    if (alias?.routing === "custom") {
+      validateCustomSetup({ owner: params.owner, name: params.name });
+      return;
+    }
+
+    // custom OpenAI-compatible route: the resolved model is the raw
+    // CUSTOM_MODEL_ID, which *can* contain a `/` (e.g. moonshotai/kimi-k2.7-code),
+    // so it slips past the no-slash branch below and would otherwise hit the
+    // opencode-authorized check (which never knows a custom-endpoint model).
+    // discriminate by the env-var sentinel first.
+    if (process.env[CUSTOM_MODEL_ID_ENV]?.trim() === params.model) {
+      validateCustomSetup({ owner: params.owner, name: params.name });
       return;
     }
 
